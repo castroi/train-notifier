@@ -1,0 +1,51 @@
+# Train Notifier configuration — EXAMPLE.
+# Copy to config.yaml and fill in your real values. config.yaml is gitignored.
+# Secrets (RAIL_API_KEY, LOG_SALT, SIGNAL_API_URL) live in .env, never here.
+
+signal:
+  bot_number: "+10000000000" # the bot's own registered Signal number (E.164)
+  owner_uuid: "00000000-0000-0000-0000-000000000000" # YOUR Signal account UUID (ACI)
+  allowlist:
+    - "00000000-0000-0000-0000-000000000000" # who may use the bot — your UUID
+
+routes:
+  - key: work
+    from_id: 1260
+    to_id: 2100
+    label_en: "Afula → Haifa"
+    label_he: "עפולה → חיפה"
+    aliases:
+      - work
+      - עבודה
+
+  - key: home
+    from_id: 2100
+    to_id: 1260
+    label_en: "Haifa → Afula"
+    label_he: "חיפה → עפולה"
+    aliases:
+      - home
+      - בית
+
+schedules:
+  - id: s1
+    cron: "30 6 * * 0-4" # Sun–Thu 06:30
+    route_key: work
+    count: 3
+
+  - id: s2
+    cron: "0 16 * * 0-4" # Sun–Thu 16:00
+    route_key: home
+    count: 3
+
+time_windows:
+  - start: "06:00"
+    end: "10:00"
+    route_key: work
+
+  - start: "15:00"
+    end: "18:00"
+    route_key: home
+
+defaults:
+  on_demand_count: 2

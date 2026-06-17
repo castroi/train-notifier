@@ -1,0 +1,72 @@
+# ============================================================
+# train-notifier deployment
+#
+# Joins your EXISTING signal-cli-rest-api stack's Docker network so the bot can
+# reach the Signal API by service name. Set these in .env:
+#   SIGNAL_NETWORK   the external network your signal-cli container is on
+#                    (find it with `docker network ls`)
+#   SIGNAL_API_URL   http://<signal-service-name>:8080
+#
+# This is a SEPARATE compose project. It does not create, modify, or restart
+# the signal-cli container — `external: true` only attaches this one container
+# to the already-existing network. Reuse the running signal-cli-rest-api;
+# do NOT start a second one.
+# ============================================================
+
+networks:
+  signal-net:
+    external: true
+    name: ${SIGNAL_NETWORK:-signal-net}
+
+services:
+
+  train-notifier:
+    build: .
+    # Pin by digest in production, e.g.:
+    # image: train-notifier@sha256:<digest>
+
+    restart: unless-stopped
+    init: true           # PID-1 signal forwarding + zombie reaping (SIGTERM → graceful shutdown)
+
+    read_only: true
+    tmpfs:
+      # World-writable (sticky) so the non-root uid 10001 can write the
+      # heartbeat file under the read-only rootfs.
+      - /run:mode=1777
+
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    mem_limit: 192m
+    mem_reservation: 64m
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    env_file:
+      - .env             # RAIL_URL, RAIL_API_KEY, SIGNAL_API_URL, LOG_SALT
+    environment:
+      - TZ=Asia/Jerusalem
+      - HEARTBEAT_PATH=/run/heartbeat
+      - CONFIG_PATH=/app/config.yaml
+
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+
+    networks:
+      - signal-net
+
+    # No 'ports:' — inbound connections are intentionally blocked.
+
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      start_period: 60s
+      interval: 30s
+      timeout: 10s
+      retries: 3

@@ -1,0 +1,9 @@
+node_modules
+dist
+*.log
+
+# Secrets / local config — never commit (public repo)
+.env
+.env.*
+!.env.example
+config.yaml
