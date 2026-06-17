@@ -57,12 +57,13 @@ function assertThrowsContaining(fn: () => void, substring: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Happy path — real config.yaml
+// Happy path — config.example.yaml (config.yaml is gitignored, so the example
+// is the committed fixture; this also guards that the example stays valid).
 // ---------------------------------------------------------------------------
 
 describe('loadConfig', () => {
-  it('loads and validates the real config.yaml without throwing', () => {
-    const cfg = loadConfig('./config.yaml');
+  it('loads and validates config.example.yaml without throwing', () => {
+    const cfg = loadConfig('./config.example.yaml');
     assert.equal(cfg.routes.length, 2);
     assert.equal(cfg.schedules.length, 2);
     assert.equal(cfg.time_windows.length, 2);
