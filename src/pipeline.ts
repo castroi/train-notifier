@@ -193,8 +193,7 @@ export async function handleMessage(
         servedRouteKey = configRoute.key;
         const count = configRoute.count ?? config.defaults.on_demand_count;
         const lines = await trainLinesFor(configRoute, count, deps, signal);
-        message =
-          lines.length > 0 ? routeReport(parsed.route, lines, count) : noTrains(parsed.route);
+        message = lines.length > 0 ? routeReport(parsed.route, lines, now) : noTrains(parsed.route);
       }
     } else {
       // kind === 'menu'
@@ -215,7 +214,7 @@ export async function handleMessage(
           const lines = await trainLinesFor(eagerConfigRoute, count, deps, signal);
           const otherRoutes = botRoutes.filter((r) => r.key !== eagerKey);
           const greeting = greetingFor(now);
-          message = eagerGreeting(eagerBotRoute, lines, otherRoutes, greeting);
+          message = eagerGreeting(eagerBotRoute, lines, otherRoutes, greeting, now);
         } else {
           message = menu(botRoutes);
         }

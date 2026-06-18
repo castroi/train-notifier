@@ -194,7 +194,7 @@ async function doRun(
       message = noTrains(botRoute);
     } else {
       const lines = trains.map(formatTrainLine);
-      message = routeReport(botRoute, lines, count);
+      message = routeReport(botRoute, lines, now);
     }
   } catch (err: unknown) {
     logger.warn('runJob: fetchRoutes failed', {
