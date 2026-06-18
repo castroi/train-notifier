@@ -7,22 +7,33 @@ import type { BotRoute } from './types.ts';
  * module); this module does NOT format train data.
  */
 
+/** "DD/MM/YYYY" in Asia/Jerusalem — used only for the route-report header. */
+function reportDate(now: Date): string {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jerusalem',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(now);
+}
+
 /**
- * Route report header: "<label_en> / <label_he> — next <count>:"
- * followed by each line prefixed with " • ".
+ * Route report header: "<label_en> — <DD/MM/YYYY>:" followed by each line
+ * prefixed with " • ". Label is English only (the Hebrew label's RTL rendering
+ * flips the "→" arrow direction).
  */
-export function routeReport(route: BotRoute, lines: string[], count: number): string {
-  const header = `${route.label_en} / ${route.label_he} — next ${count}:`;
+export function routeReport(route: BotRoute, lines: string[], now: Date): string {
+  const header = `${route.label_en} — ${reportDate(now)}:`;
   const bullets = lines.map((l) => ` • ${l}`).join('\n');
   return `${header}\n${bullets}`;
 }
 
 /**
- * Menu message: "Pick a route:" followed by numbered bilingual entries.
- * " <n>. <label_en> / <label_he>"
+ * Menu message: "Pick a route:" followed by numbered entries.
+ * " <n>. <label_en>"
  */
 export function menu(routes: BotRoute[]): string {
-  const items = routes.map((r) => ` ${r.index}. ${r.label_en} / ${r.label_he}`).join('\n');
+  const items = routes.map((r) => ` ${r.index}. ${r.label_en}`).join('\n');
   return `Pick a route:\n${items}`;
 }
 
@@ -37,11 +48,10 @@ export function eagerGreeting(
   lines: string[],
   otherRoutes: BotRoute[],
   greeting: string,
+  now: Date,
 ): string {
-  const routeSection = routeReport(route, lines, lines.length);
-  const otherItems = otherRoutes
-    .map((r) => ` ${r.index}. ${r.label_en} / ${r.label_he}`)
-    .join('\n');
+  const routeSection = routeReport(route, lines, now);
+  const otherItems = otherRoutes.map((r) => ` ${r.index}. ${r.label_en}`).join('\n');
   return `${greeting}\n${routeSection}\nOther routes:\n${otherItems}`;
 }
 
