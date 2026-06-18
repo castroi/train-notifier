@@ -7,3 +7,8 @@ dist
 .env.*
 !.env.example
 config.yaml
+config.yaml.bak.*
+*.bak
+
+# Local-only scripts / helpers — never committed
+pi-scripts/
