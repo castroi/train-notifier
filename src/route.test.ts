@@ -127,6 +127,39 @@ describe('confirm flow', () => {
     assert.equal(done.toId, 2100);
   });
 
+  it('"1" confirms (numbered yes)', () => {
+    const store = createConversationStore();
+    reply(beginRoute('נמל תעופה אל חיפה', U, store));
+    assert.equal(getFlow(store).awaiting, 'confirm');
+    reply(continueRoute('1', U, getFlow(store), store));
+    assert.equal(getFlow(store).origin, '8600');
+  });
+
+  it('"2" rejects (numbered no) and re-asks the half', () => {
+    const store = createConversationStore();
+    reply(beginRoute('נמל תעופה אל חיפה', U, store));
+    const out = continueRoute('2', U, getFlow(store), store);
+    assert.match(reply(out), /send the origin again/i);
+    assert.equal(getFlow(store).awaiting, 'origin');
+  });
+
+  it('"0" cancels while in a confirm flow', () => {
+    const store = createConversationStore();
+    reply(beginRoute('נמל תעופה אל חיפה', U, store));
+    assert.equal(getFlow(store).awaiting, 'confirm');
+    const out = continueRoute('0', U, getFlow(store), store);
+    assert.match(reply(out), /cancel/i);
+    assert.equal(store.get(U), undefined);
+  });
+
+  it('Hebrew כן confirms (equivalent to yes)', () => {
+    const store = createConversationStore();
+    reply(beginRoute('נמל תעופה אל חיפה', U, store));
+    assert.equal(getFlow(store).awaiting, 'confirm');
+    reply(continueRoute('כן', U, getFlow(store), store));
+    assert.equal(getFlow(store).origin, '8600');
+  });
+
   it('"no" re-asks the same half as free text', () => {
     const store = createConversationStore();
     reply(beginRoute('נמל תעופה אל חיפה', U, store));

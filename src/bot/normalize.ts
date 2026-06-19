@@ -15,8 +15,16 @@
  *      ץ (U+05E5) → צ (U+05E6)
  */
 export function normalize(s: string): string {
+  // Step 0: strip invisible bidirectional / zero-width formatting characters.
+  // Hebrew mobile keyboards and Signal wrap RTL text with marks like U+200F
+  // (RLM) or U+200E (LRM); left in, they make e.g. "כן" fail to match.
+  // Covers: zero-width + directional marks (U+200B–U+200F), bidi
+  // embeddings/overrides (U+202A–U+202E), word joiner + isolates
+  // (U+2060–U+206F), and BOM/ZWNBSP (U+FEFF).
+  let result = s.replace(/[​-‏‪-‮⁠-⁯﻿]/g, '');
+
   // Step 1 & 2: trim + collapse whitespace
-  let result = s.trim().replace(/\s+/g, ' ');
+  result = result.trim().replace(/\s+/g, ' ');
 
   // Step 3: lowercase Latin (leaves Hebrew, digits, symbols unchanged)
   result = result.toLowerCase();

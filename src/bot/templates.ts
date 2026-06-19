@@ -98,9 +98,13 @@ export function customMenu(prompt: string, labels: string[]): string {
   return `${prompt}\n${items}\n(0 to cancel)`;
 }
 
-/** "Did you mean X as <role>? Reply yes / no." */
+/**
+ * "Did you mean X as <role>?" with a numbered 1=yes / 2=no choice, matching the
+ * menu input model so the user never has to type a word (or switch keyboard
+ * layout). The words yes/no/כן/לא are still accepted, just no longer required.
+ */
 export function customConfirm(label: string, role: string): string {
-  return `Did you mean ${label} as ${role}?\nReply yes / no (0 to cancel).`;
+  return `Did you mean ${label} as ${role}?\n 1. Yes\n 2. No\n(0 to cancel)`;
 }
 
 /** Reserved route-word used as a route half (custom-route-spec §8). */
