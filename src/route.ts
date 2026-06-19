@@ -42,15 +42,22 @@ type Role = 'origin' | 'destination';
 // Word sets (reserved route-words mirror config.yaml aliases)
 // ---------------------------------------------------------------------------
 
-const RESERVED = new Set(['home', 'work', 'בית', 'עבודה']);
-const CONTROL = new Set(['menu', 'help', 'תפריט', 'עזרה']);
-const CANCEL = new Set(['0', 'cancel', 'ביטול']);
-const YES = new Set(['yes', 'y', 'כן']);
-const NO = new Set(['no', 'n', 'לא']);
-
 function norm(s: string): string {
   return normalize(s).trim();
 }
+
+// Word-set members are stored in normalized form so they compare equal to the
+// normalized input. This matters for Hebrew words whose final letter forms are
+// rewritten by normalize() — e.g. כן ("yes") normalizes to כנ.
+function wordSet(...words: string[]): Set<string> {
+  return new Set(words.map(norm));
+}
+
+const RESERVED = wordSet('home', 'work', 'בית', 'עבודה');
+const CONTROL = wordSet('menu', 'help', 'תפריט', 'עזרה');
+const CANCEL = wordSet('0', 'cancel', 'ביטול');
+const YES = wordSet('yes', 'y', 'כן');
+const NO = wordSet('no', 'n', 'לא');
 
 // ---------------------------------------------------------------------------
 // Station labels — bilingual for menus, EN-only for report headers (the Hebrew
@@ -282,10 +289,14 @@ export function continueRoute(
       if (target === undefined) {
         throw new Error('continueRoute: confirm flow without a confirmTarget');
       }
-      if (YES.has(n)) {
+      // '1'/'2' are the primary (keyboard-neutral) answers; words are fallbacks.
+      // No collision with menu numbering: a 'confirm' flow never carries
+      // candidates, and menu picks are handled in the 'origin'/'destination'
+      // case — the two are mutually exclusive on flow.awaiting.
+      if (n === '1' || YES.has(n)) {
         return resolveRole(role, target, ctx, sender, store);
       }
-      if (NO.has(n)) {
+      if (n === '2' || NO.has(n)) {
         saveFlow(sender, store, {
           awaiting: role,
           origin: flow.origin,

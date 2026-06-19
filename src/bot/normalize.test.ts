@@ -59,6 +59,20 @@ describe('normalize', () => {
     assert.equal(normalize('עבודה'), 'עבודה');
   });
 
+  it('strips bidirectional / zero-width marks (Step 0)', () => {
+    // Hebrew mobile keyboards wrap RTL text with RLM (U+200F) / LRM (U+200E);
+    // left in, "כן" would not match. After Step 0 + final-form mapping → "כנ".
+    assert.equal(normalize('‏כן‎'), 'כנ');
+    assert.equal(normalize('‫כן‬'), 'כנ'); // bidi embedding
+    assert.equal(normalize('כן﻿'), 'כנ'); // BOM / ZWNBSP
+  });
+
+  it('strips an edge mark before trimming so leading whitespace still goes', () => {
+    // A leading RLM is not whitespace, so trim() alone would not reach the
+    // space behind it — Step 0 must run before trim.
+    assert.equal(normalize('‏  כן  '), 'כנ');
+  });
+
   it('handles combined niqqud + final letters', () => {
     // שָׁלוֹם with niqqud + final letter ם
     const withBoth = 'שָׁלוֹם';
