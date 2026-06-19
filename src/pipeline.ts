@@ -161,11 +161,11 @@ export async function trainLinesFor(
   count: number,
   deps: Pick<PipelineDeps, 'fetchRoutes' | 'now'>,
   signal?: AbortSignal,
-): Promise<string[]> {
+): Promise<{ lines: string[]; firstDayNote: string }> {
   const now = deps.now ? deps.now() : new Date();
   const result = await deps.fetchRoutes(route.from_id, route.to_id, now, signal);
   const trains = extractTrains(result, count, now.getTime());
-  return trains.map(formatTrainLine);
+  return { lines: trains.map(formatTrainLine), firstDayNote: trains[0]?.dayNote ?? '' };
 }
 
 /**
@@ -233,12 +233,11 @@ export async function handleMessage(
       try {
         await withDeadline(async (signal) => {
           const result = await deps.fetchRoutes(outcome.fromId, outcome.toId, now, signal);
-          const lines = extractTrains(result, CUSTOM_ROUTE_COUNT, now.getTime()).map(
-            formatTrainLine,
-          );
+          const trains = extractTrains(result, CUSTOM_ROUTE_COUNT, now.getTime());
+          const lines = trains.map(formatTrainLine);
           const message =
             lines.length > 0
-              ? customReport(outcome.label, lines, now)
+              ? customReport(outcome.label, lines, now, trains[0].dayNote)
               : customNoTrains(outcome.label);
           await deps.send(botNumber, ownerUuid, message, signal);
           deps.counters.record(CUSTOM_KEY, 'success');
@@ -294,8 +293,11 @@ export async function handleMessage(
       } else {
         servedRouteKey = configRoute.key;
         const count = configRoute.count ?? config.defaults.on_demand_count;
-        const lines = await trainLinesFor(configRoute, count, deps, signal);
-        message = lines.length > 0 ? routeReport(parsed.route, lines, now) : noTrains(parsed.route);
+        const { lines, firstDayNote } = await trainLinesFor(configRoute, count, deps, signal);
+        message =
+          lines.length > 0
+            ? routeReport(parsed.route, lines, now, firstDayNote)
+            : noTrains(parsed.route);
       }
     } else {
       // kind === 'menu'
@@ -313,10 +315,15 @@ export async function handleMessage(
         if (eagerBotRoute !== undefined && eagerConfigRoute !== undefined) {
           servedRouteKey = eagerConfigRoute.key;
           const count = eagerConfigRoute.count ?? config.defaults.on_demand_count;
-          const lines = await trainLinesFor(eagerConfigRoute, count, deps, signal);
+          const { lines, firstDayNote } = await trainLinesFor(
+            eagerConfigRoute,
+            count,
+            deps,
+            signal,
+          );
           const otherRoutes = botRoutes.filter((r) => r.key !== eagerKey);
           const greeting = greetingFor(now);
-          message = eagerGreeting(eagerBotRoute, lines, otherRoutes, greeting, now);
+          message = eagerGreeting(eagerBotRoute, lines, otherRoutes, greeting, now, firstDayNote);
         } else {
           message = menu(botRoutes);
         }
