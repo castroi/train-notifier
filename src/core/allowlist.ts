@@ -12,7 +12,9 @@ import { createHmac } from 'node:crypto';
  * allowlist (case-insensitive).
  */
 export function isAllowed(sourceUuid: string | undefined, allowlist: string[]): boolean {
-  if (sourceUuid === undefined) return false;
+  // Reject undefined AND empty string: an empty key would otherwise collapse
+  // distinct senders into one shared conversation flow / rate-limit bucket.
+  if (!sourceUuid) return false;
   const lower = sourceUuid.toLowerCase();
   return allowlist.some((entry) => entry.toLowerCase() === lower);
 }
