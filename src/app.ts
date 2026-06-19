@@ -11,6 +11,7 @@
  *   7. Graceful shutdown on SIGTERM / SIGINT.
  */
 
+import { createConversationStore } from './bot/conversation.ts';
 import { loadConfig } from './config/load.ts';
 import { Counters } from './core/counters.ts';
 import { DedupCache } from './core/dedup.ts';
@@ -73,6 +74,7 @@ requireUrl('SIGNAL_API_URL', process.env.SIGNAL_API_URL, false);
 const dedup = new DedupCache();
 const counters = new Counters();
 const rateLimiter = new RateLimiter();
+const conversation = createConversationStore();
 
 const deps = {
   fetchRoutes,
@@ -80,6 +82,7 @@ const deps = {
   dedup,
   counters,
   rateLimiter,
+  conversation,
 };
 
 // ---------------------------------------------------------------------------

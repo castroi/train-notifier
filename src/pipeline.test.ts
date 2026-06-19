@@ -6,6 +6,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { createConversationStore } from './bot/conversation.ts';
 import { menu, outage } from './bot/templates.ts';
 import type { Config } from './config/types.ts';
 import { Counters } from './core/counters.ts';
@@ -336,5 +337,121 @@ describe('toBotRoutes', () => {
     assert.equal(botRoutes[0]!.key, 'work');
     assert.equal(botRoutes[0]!.label_en, 'Afula → Haifa');
     assert.equal(botRoutes[1]!.key, 'home');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Custom-route flow (deps.conversation set) — the path the reviews flagged.
+// ---------------------------------------------------------------------------
+
+/** Upcoming-train result with `n` travels at 06:30..(06+n):30 (after a 05:00 now). */
+function makeUpcomingResult(n: number): RailApiGetRoutesResult {
+  const travels = Array.from({ length: n }, (_, i) => {
+    const dep = `2026-06-15T${String(6 + i).padStart(2, '0')}:30:00+03:00`;
+    const arr = `2026-06-15T${String(7 + i).padStart(2, '0')}:15:00+03:00`;
+    return {
+      departureTime: dep,
+      arrivalTime: arr,
+      trains: [
+        {
+          trainNumber: 2000 + i,
+          orignStation: 2800,
+          destinationStation: 1600,
+          originPlatform: 1,
+          destPlatform: 2,
+          arrivalTime: arr,
+          departureTime: dep,
+          trainPosition: { calcDiffMinutes: 0 },
+        },
+      ],
+    };
+  });
+  return { result: { travels } };
+}
+
+/** Deps with a real conversation store, an early "now" (so fakes are upcoming),
+ *  and captured fetch args. */
+function makeCustomDeps(fetchImpl?: PipelineDeps['fetchRoutes']) {
+  const fetchCalls: Array<{ fromId: number; toId: number }> = [];
+  const store = createConversationStore();
+  const deps = makeDeps({
+    conversation: store,
+    now: () => dateAtJerusalemTime(5, 0),
+    fetchRoutes:
+      fetchImpl ??
+      (async (fromId, toId) => {
+        fetchCalls.push({ fromId, toId });
+        return makeUpcomingResult(2);
+      }),
+  });
+  return Object.assign(deps, { store, fetchCalls });
+}
+
+function bullets(message: string): number {
+  return (message.match(/ • /g) ?? []).length;
+}
+
+describe('handleMessage — custom-route flow', () => {
+  it('"0" enters custom mode: prompts, creates a flow, no fetch', async () => {
+    const deps = makeCustomDeps();
+    await handleMessage(makeMsg({ body: '0' }), BASE_CONFIG, deps, SALT);
+
+    assert.equal(deps.sendCalls.length, 1);
+    assert.match(deps.sendCalls[0]!.message, /Custom route/i);
+    assert.equal(deps.fetchCalls.length, 0);
+    assert.equal(deps.store.get(SENDER_UUID)?.awaiting, 'route');
+  });
+
+  it('one-shot route resolves, fetches the right stations, sends a report', async () => {
+    const deps = makeCustomDeps();
+    await handleMessage(makeMsg({ body: 'בנימינה אל נהריה' }), BASE_CONFIG, deps, SALT);
+
+    assert.equal(deps.sendCalls.length, 1);
+    assert.match(deps.sendCalls[0]!.message, /Binyamina → Nahariya/);
+    assert.deepEqual(deps.fetchCalls, [{ fromId: 2800, toId: 1600 }]);
+    assert.equal(deps.store.get(SENDER_UUID), undefined); // cleared on resolve
+  });
+
+  it('resolved route returns at most 5 trains (CUSTOM_ROUTE_COUNT)', async () => {
+    const deps = makeCustomDeps(async () => makeUpcomingResult(7));
+    await handleMessage(makeMsg({ body: 'בנימינה אל נהריה' }), BASE_CONFIG, deps, SALT);
+
+    assert.equal(deps.sendCalls.length, 1);
+    assert.equal(bullets(deps.sendCalls[0]!.message), 5);
+  });
+
+  it('multi-turn: menu reply then numeric pick → resolved', async () => {
+    const deps = makeCustomDeps();
+    await handleMessage(makeMsg({ timestamp: 1, body: 'TLV to afula' }), BASE_CONFIG, deps, SALT);
+    assert.equal(deps.fetchCalls.length, 0); // menu only, no fetch yet
+    assert.match(deps.sendCalls[0]!.message, /Which origin/i);
+
+    await handleMessage(makeMsg({ timestamp: 2, body: '2' }), BASE_CONFIG, deps, SALT);
+    assert.equal(deps.sendCalls.length, 2);
+    assert.deepEqual(deps.fetchCalls, [{ fromId: 4600, toId: 1260 }]);
+    assert.match(deps.sendCalls[1]!.message, /Tel Aviv - HaShalom → Afula/);
+  });
+
+  it('reserved word mid-flow breaks out to the core path', async () => {
+    const deps = makeCustomDeps();
+    await handleMessage(makeMsg({ timestamp: 1, body: 'ראשון אל חיפה' }), BASE_CONFIG, deps, SALT);
+    await handleMessage(makeMsg({ timestamp: 2, body: 'home' }), BASE_CONFIG, deps, SALT);
+
+    assert.equal(deps.sendCalls.length, 2);
+    // Second reply is the core "home" route report, not a custom menu.
+    assert.match(deps.sendCalls[1]!.message, /Haifa → Afula/);
+    assert.equal(deps.store.get(SENDER_UUID), undefined);
+  });
+
+  it('oversized body is truncated before matching (separator beyond cap is dropped)', async () => {
+    const deps = makeCustomDeps();
+    const body = `${'x'.repeat(300)} to afula`; // " to afula" sits past the 200-char cap
+    await handleMessage(makeMsg({ body }), BASE_CONFIG, deps, SALT);
+
+    assert.equal(deps.sendCalls.length, 1);
+    // Truncation removed the separator → falls to the core menu, not a custom flow.
+    assert.match(deps.sendCalls[0]!.message, /Pick a route/);
+    assert.equal(deps.fetchCalls.length, 0);
+    assert.equal(deps.store.get(SENDER_UUID), undefined);
   });
 });
