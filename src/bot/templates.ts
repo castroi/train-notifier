@@ -7,23 +7,28 @@ import type { BotRoute } from './types.ts';
  * module); this module does NOT format train data.
  */
 
-/** "DD/MM/YYYY" in Asia/Jerusalem — used only for the route-report header. */
+/** "DD/MM" in Asia/Jerusalem — used only for the route-report header. */
 function reportDate(now: Date): string {
   return new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Jerusalem',
     day: '2-digit',
     month: '2-digit',
-    year: 'numeric',
   }).format(now);
 }
 
 /**
- * Route report header: "<label_en> — <DD/MM/YYYY>:" followed by each line
+ * Route report header: "<label_en> — <day>:" followed by each line
  * prefixed with " • ". Label is English only (the Hebrew label's RTL rendering
- * flips the "→" arrow direction).
+ * flips the "→" arrow direction). The header day is the first line's `dayNote`
+ * ("tomorrow" / "Sun 21/06") when set, else today's "DD/MM".
  */
-export function routeReport(route: BotRoute, lines: string[], now: Date): string {
-  const header = `${route.label_en} — ${reportDate(now)}:`;
+export function routeReport(
+  route: BotRoute,
+  lines: string[],
+  now: Date,
+  firstDayNote: string,
+): string {
+  const header = `${route.label_en} — ${firstDayNote || reportDate(now)}:`;
   const bullets = lines.map((l) => ` • ${l}`).join('\n');
   return `${header}\n${bullets}`;
 }
@@ -49,8 +54,9 @@ export function eagerGreeting(
   otherRoutes: BotRoute[],
   greeting: string,
   now: Date,
+  firstDayNote: string,
 ): string {
-  const routeSection = routeReport(route, lines, now);
+  const routeSection = routeReport(route, lines, now, firstDayNote);
   const otherItems = otherRoutes.map((r) => ` ${r.index}. ${r.label_en}`).join('\n');
   return `${greeting}\n${routeSection}\nOther routes:\n${otherItems}`;
 }
@@ -130,8 +136,13 @@ export function customSameStation(): string {
  * Custom-route schedule report. `routeLabel` is "<From EN> → <To EN>" built by
  * the caller; lines are pre-formatted train strings.
  */
-export function customReport(routeLabel: string, lines: string[], now: Date): string {
-  const header = `${routeLabel} — ${reportDate(now)}:`;
+export function customReport(
+  routeLabel: string,
+  lines: string[],
+  now: Date,
+  firstDayNote: string,
+): string {
+  const header = `${routeLabel} — ${firstDayNote || reportDate(now)}:`;
   const bullets = lines.map((l) => ` • ${l}`).join('\n');
   return `${header}\n${bullets}`;
 }
