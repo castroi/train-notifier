@@ -28,7 +28,7 @@ export function routeReport(
   now: Date,
   firstDayNote: string,
 ): string {
-  const header = `${route.label_en} — ${firstDayNote ? firstDayNote : reportDate(now)}:`;
+  const header = `${route.label_en} — ${firstDayNote || reportDate(now)}:`;
   const bullets = lines.map((l) => ` • ${l}`).join('\n');
   return `${header}\n${bullets}`;
 }
@@ -142,7 +142,7 @@ export function customReport(
   now: Date,
   firstDayNote: string,
 ): string {
-  const header = `${routeLabel} — ${firstDayNote ? firstDayNote : reportDate(now)}:`;
+  const header = `${routeLabel} — ${firstDayNote || reportDate(now)}:`;
   const bullets = lines.map((l) => ` • ${l}`).join('\n');
   return `${header}\n${bullets}`;
 }
