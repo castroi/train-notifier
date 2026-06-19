@@ -7,8 +7,18 @@
  *   handleMessage(msg, config, deps)  — full on-demand pipeline
  */
 
+import type { ConversationStore } from './bot/conversation.ts';
+import { normalize } from './bot/normalize.ts';
 import { parseInput, resolveEager } from './bot/parse.ts';
-import { eagerGreeting, menu, noTrains, outage, routeReport } from './bot/templates.ts';
+import {
+  customNoTrains,
+  customReport,
+  eagerGreeting,
+  menu,
+  noTrains,
+  outage,
+  routeReport,
+} from './bot/templates.ts';
 import type { BotRoute, BotWindow } from './bot/types.ts';
 import type { Config, Route } from './config/types.ts';
 import { hashSender, isAllowed, logUnknownSender } from './core/allowlist.ts';
@@ -18,7 +28,26 @@ import { dedupKey } from './core/dedup.ts';
 import type { RateLimiter } from './core/ratelimit.ts';
 import { extractTrains, formatTrainLine } from './rail/format.ts';
 import type { RailApiGetRoutesResult } from './rail/types.ts';
+import {
+  beginRoute,
+  continueRoute,
+  enterCustomMode,
+  hasRouteSeparator,
+  type RouteOutcome,
+} from './route.ts';
 import type { IncomingMessage } from './signal/types.ts';
+
+/** Custom on-demand routes always return 5 upcoming trains (spec §1). */
+const CUSTOM_ROUTE_COUNT = 5;
+
+/** Keywords that enter custom-route mode when no flow is pending (spec §7: "0"). */
+const CUSTOM_ENTRY = new Set(['0', 'other']);
+
+/** Counter key for custom (non-config) routes. */
+const CUSTOM_KEY = 'custom';
+
+/** Max inbound body length fed to the matcher (defense-in-depth against DoS). */
+const MAX_BODY_LEN = 200;
 
 // ---------------------------------------------------------------------------
 // Public dependency interface for handleMessage
@@ -41,6 +70,11 @@ export interface PipelineDeps {
   counters: Counters;
   /** Optional per-sender rate limiter (A04). When omitted, no throttling. */
   rateLimiter?: RateLimiter;
+  /**
+   * Optional conversation store enabling the custom-route flow. When omitted,
+   * only the core home/work numbered menu is served (custom routes disabled).
+   */
+  conversation?: ConversationStore;
   /** Override "now" for testing. Defaults to `new Date()`. */
   now?: () => Date;
 }
@@ -173,8 +207,76 @@ export async function handleMessage(
   const botRoutes = toBotRoutes(config);
   const now = deps.now ? deps.now() : new Date();
 
+  // --- c0. Custom-route flow (only when a conversation store is wired) ----
+  // Resolves a route to (fromId, toId), then fetches CUSTOM_ROUTE_COUNT trains.
+  // Cap the body before matching: station queries are a few dozen chars at most,
+  // and the matcher runs Levenshtein × all stations synchronously on the event
+  // loop, so an oversized message must not be allowed to stall the Pi.
+  let coreBody = (msg.body ?? '').slice(0, MAX_BODY_LEN);
+  if (deps.conversation) {
+    const store = deps.conversation;
+    const sender = msg.sourceUuid ?? '';
+
+    const dispatchCustom = async (outcome: RouteOutcome): Promise<void> => {
+      if (outcome.kind === 'reply') {
+        // Same deadline/abort discipline as the resolved/core paths so a hung
+        // Signal bridge cannot wedge the handler on a plain reply.
+        await withDeadline(
+          (signal) => deps.send(botNumber, ownerUuid, outcome.text, signal),
+          25_000,
+        );
+        return;
+      }
+      // 'breakout' is handled by the caller and never dispatched here.
+      if (outcome.kind !== 'resolved') return;
+      // outcome.kind === 'resolved' — fetch + format within the deadline.
+      try {
+        await withDeadline(async (signal) => {
+          const result = await deps.fetchRoutes(outcome.fromId, outcome.toId, now, signal);
+          const lines = extractTrains(result, CUSTOM_ROUTE_COUNT, now.getTime()).map(
+            formatTrainLine,
+          );
+          const message =
+            lines.length > 0
+              ? customReport(outcome.label, lines, now)
+              : customNoTrains(outcome.label);
+          await deps.send(botNumber, ownerUuid, message, signal);
+          deps.counters.record(CUSTOM_KEY, 'success');
+        }, 25_000);
+      } catch (err: unknown) {
+        deps.counters.record(CUSTOM_KEY, 'fail');
+        logger.warn('handleMessage: custom-route error, sending outage', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        try {
+          await deps.send(botNumber, ownerUuid, outage());
+        } catch {
+          logger.warn('handleMessage: outage send also failed — dropping');
+        }
+      }
+    };
+
+    const flow = store.get(sender);
+    if (flow) {
+      const outcome = continueRoute(coreBody, sender, flow, store);
+      if (outcome.kind === 'breakout') {
+        // Reserved/control word during a flow → fall through to the core path.
+        coreBody = outcome.text;
+      } else {
+        await dispatchCustom(outcome);
+        return;
+      }
+    } else if (CUSTOM_ENTRY.has(normalize(coreBody).trim())) {
+      await dispatchCustom(enterCustomMode(sender, store));
+      return;
+    } else if (hasRouteSeparator(coreBody)) {
+      await dispatchCustom(beginRoute(coreBody, sender, store));
+      return;
+    }
+  }
+
   // --- c + d. Parse + fetch + send (with deadline) ----------------------
-  const parsed = parseInput(msg.body ?? '', botRoutes);
+  const parsed = parseInput(coreBody, botRoutes);
 
   // The route a rail fetch is attributed to (null for a plain menu, which
   // performs no fetch). Recorded exactly once: success after send, fail on

@@ -5,7 +5,8 @@ A self-hosted service that pushes train departures to the owner over Signal on a
 ## Features
 
 - Pushes train departures over Signal on a schedule (cron)
-- Answers on-demand: text the bot, get the next 2–3 trains for a route
+- Answers on-demand: text the bot, get the next 2–3 trains for a predefined route
+- Requests custom routes: send any origin → destination (Hebrew or English), get the next 5 trains
 - Supports many predefined routes and many cron jobs
 
 ## Deployment
@@ -137,6 +138,77 @@ bot → Afula → TLV:
        • 07:42 → 09:01 · +6 min
        • 08:12 → 09:30 · on time · plat 2
 ```
+
+### Custom routes (on-demand)
+
+Any origin → destination (not in config) can be requested. The bot resolves each station with typo tolerance and multi-station disambiguation, then returns the **next 5 trains**.
+
+**Entry points:**
+
+1. Send `0` (or pick **"Other route"** from the menu) → bot asks for a route
+2. Send a direct route:
+   - Hebrew: `חיפה אל עפולה` (using `אל`)
+   - English: `haifa to afula` or `from haifa to afula`
+3. Send just an origin (e.g. `חיפה`) → bot prompts for destination
+4. Send just a destination (e.g., `to afula`) → prompts for origin (or uses memory in v2)
+
+**Disambiguation examples:**
+
+**E. Multi-station city (Hebrew)**
+```
+me  → חיפה אל תל אביב
+bot → Haifa stations. Which one? (0 to cancel)
+       1. Haifa Center - HaShmona
+       2. Haifa - Bat Galim
+       3. Haifa - Hof HaKarmel
+me  → 2
+bot → Tel Aviv stations. Which one? (0 to cancel)
+       1. Savidor
+       2. HaShalom
+       3. University
+       4. HaHagana
+me  → 1
+bot → Haifa - Bat Galim → Savidor:
+       • 09:45 → 10:15 · on time
+       • 10:15 → 10:45 · on time
+       • 10:45 → 11:15 · +2 min
+       • 11:15 → 11:45 · on time
+       • 11:45 → 12:15 · on time
+```
+
+**F. Typo with confirmation (English)**
+```
+me  → nahariya to carmely
+bot → Did you mean Nahariya? (1 for yes, 0 to cancel)
+me  → 1
+bot → Did you mean Karmiel? (1 for yes, 0 to cancel)
+me  → 1
+bot → Nahariya → Karmiel:
+       • 10:00 → 11:22 · on time
+       • 10:45 → 12:07 · on time
+       • 11:15 → 12:37 · on time
+       • 11:45 → 13:07 · on time
+       • 12:15 → 13:37 · on time
+```
+
+**G. Abbreviation (English)**
+```
+me  → tlv to afula
+bot → Afula - R. Eitan:
+       • 10:30 → 11:58 · on time
+       • 11:00 → 12:28 · on time
+       • 11:30 → 12:58 · on time
+       • 12:00 → 13:28 · on time
+       • 12:30 → 13:58 · on time
+```
+
+**Escape & edge cases:**
+
+- Send `home` or `work` (or `בית` / `עבודה`) at any prompt → **aborts custom flow, runs core route** (the daily routes are always honoured)
+- Send `0` at any prompt → **cancel** the custom request (no trains sent)
+- Reserved words (`home`/`work`/`בית`/`עבודה`) are route names, not stations — using them as a station in a route (e.g. `עבודה אל חיפה`) triggers a clarification instead of resolving them as stations
+
+For full matching rules (edit-distance thresholds, prefix matching, city abbreviations), see [`plans/custom-route-spec.md`](plans/custom-route-spec.md).
 
 ## Development
 
