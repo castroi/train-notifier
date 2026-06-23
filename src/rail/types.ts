@@ -1,3 +1,16 @@
+/** Live position of a moving train; null until the train is physically tracked. */
+export interface TrainPosition {
+  /** Last station the train has passed; appears in `routeStations`. */
+  currentLastStation?: number;
+  nextStation?: number;
+  calcDiffMinutes?: number;
+}
+
+/** One station on the train's full physical route, origin → terminus. */
+export interface RouteStation {
+  stationId: number;
+}
+
 export interface Train {
   trainNumber: number;
   orignStation: number; // intentionally misspelled to match the API
@@ -6,7 +19,8 @@ export interface Train {
   destPlatform: number;
   arrivalTime: string;
   departureTime: string;
-  trainPosition: unknown;
+  trainPosition: TrainPosition | null;
+  routeStations?: RouteStation[];
 }
 
 export interface RailApiRouteItem {
