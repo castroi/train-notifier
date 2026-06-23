@@ -84,6 +84,28 @@ the rule only changes the keep/drop decision.
 
 ## Out of scope (deferred)
 
-- Grace buffer on the fallback (switch only if the raw fallback proves wrong).
 - `< N results` next-day re-query net (API rollover covers the common case).
 - Instrumentation counter for fallback rate.
+
+### The buffer idea (fallback hardening, if needed)
+
+The fallback path keeps the **original raw** scheduled-time filter: a train is
+dropped once `scheduledDeparture + calcDiffMinutes` passes (minus `PAST_GRACE_MS`).
+This still carries the original bug for the one case the position rule can't see:
+a train that **originates at the boarding station and is delayed before it starts
+moving** has no `trainPosition` yet, so `calcDiffMinutes` is 0 and it's dropped at
+its scheduled time even though it hasn't left.
+
+The fix, if that case bites: add a grace **buffer** to the fallback only —
+
+```
+departMs + delayMin * 60_000 < nowMs - PAST_GRACE_MS - BUFFER_MS
+```
+
+i.e. keep a position-less train for `BUFFER_MS` past its (delay-adjusted) schedule.
+A small value (~5–10 min) covers a delayed-at-origin train until tracking kicks in,
+without affecting the position path (which stays exact). Trade-off: the buffer can
+briefly keep a train that actually left on time (a false "still here"), so keep it
+small. Decide the value from real data — query an origin station a few minutes
+before departure and watch when `trainPosition` first appears; set `BUFFER_MS` to
+cover that gap. Touch only the fallback `else if`; the primary rule is unchanged.
