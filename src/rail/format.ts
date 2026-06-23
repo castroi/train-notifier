@@ -55,11 +55,18 @@ const PAST_GRACE_MS = 60_000;
 /**
  * Summarise the next `count` upcoming trains.
  *
- * The rail API ignores the requested `hour` and always returns the full day's
- * timetable from the first departure, so we filter to upcoming departures here
- * (this mirrors better-rail/server, which compares each route's departure to
- * `now`). The filter is delay-aware: a delayed train is kept until its actual
- * (delayed) departure has passed.
+ * The rail API always returns the full day's (and next service day's) timetable,
+ * so we filter to trains still catchable at the boarding station here.
+ *
+ * Primary signal: live position. `trains[0].routeStations` is the train's full
+ * physical route and `trainPosition.currentLastStation` is where it currently is;
+ * a train is catchable while it has not yet passed the boarding station
+ * (`orignStation`). This keeps a delayed train that is still upstream of — or
+ * sitting at — the boarding station, even after its scheduled time has passed.
+ *
+ * Fallback (no usable position, e.g. a train not yet moving): the original
+ * delay-adjusted scheduled-time filter — a train is kept until its (delayed)
+ * scheduled departure passes.
  *
  * Departure strings carry no timezone and are Israel-local; the process runs
  * `TZ=Asia/Jerusalem`, so `new Date(str)` yields the correct epoch to compare
@@ -76,15 +83,28 @@ export function extractTrains(
   for (const travel of travels) {
     if (summaries.length >= count) break;
 
+    // trains[0] is the boarding leg of the journey, so its `orignStation` is the
+    // queried station and its position/route describe the train the rider catches.
     const firstTrain: Train | undefined = travel.trains[0];
     if (!firstTrain) continue;
 
-    const delayMin =
-      (firstTrain.trainPosition as { calcDiffMinutes?: number } | null)?.calcDiffMinutes ?? 0;
-
-    // Skip trains whose delay-adjusted departure is already in the past.
+    const pos = firstTrain.trainPosition;
+    const delayMin = pos?.calcDiffMinutes ?? 0;
     const departMs = new Date(travel.departureTime).getTime();
-    if (Number.isFinite(departMs) && departMs + delayMin * 60_000 < nowMs - PAST_GRACE_MS) {
+
+    // Locate the boarding station and the train's current position on the route.
+    // Routes are acyclic, so first-occurrence `indexOf` uniquely orders the stops.
+    const route = firstTrain.routeStations?.map((s) => s.stationId);
+    const boardIx = route ? route.indexOf(firstTrain.orignStation) : -1;
+    const curIx =
+      route && pos?.currentLastStation !== undefined ? route.indexOf(pos.currentLastStation) : -1;
+
+    if (boardIx >= 0 && curIx >= 0) {
+      // Position is usable: drop the train only once it has rolled past the
+      // boarding station (curIx > boardIx). Upstream or at-platform → keep.
+      if (curIx > boardIx) continue;
+    } else if (Number.isFinite(departMs) && departMs + delayMin * 60_000 < nowMs - PAST_GRACE_MS) {
+      // Fallback: no usable position → original delay-adjusted scheduled-time filter.
       continue;
     }
 
