@@ -48,8 +48,23 @@ describe('resolveDate', () => {
     assert.deepEqual(resolveDate('17/09/2027', NOW), { kind: 'date', y: 2027, m: 9, d: 17 });
   });
 
+  it('resolves Hebrew "עכשיו" (now)', () => {
+    assert.deepEqual(resolveDate('עכשיו', NOW), { kind: 'now' });
+  });
+
+  it('resolves Hebrew "היום" (today), incl. final-letter normalization', () => {
+    assert.deepEqual(resolveDate('היום', NOW), { kind: 'date', y: 2026, m: 6, d: 22 });
+    // Padded / wrapped in an RTL mark still resolves (normalize() strips them).
+    assert.deepEqual(resolveDate(' ‏היום ', NOW), { kind: 'date', y: 2026, m: 6, d: 22 });
+  });
+
+  it('resolves Hebrew "מחר" (tomorrow)', () => {
+    assert.deepEqual(resolveDate('מחר', NOW), { kind: 'date', y: 2026, m: 6, d: 23 });
+  });
+
   it('rejects weekday words (Phase 2)', () => {
     assert.equal(resolveDate('sunday', NOW), null);
+    assert.equal(resolveDate('ראשון', NOW), null);
   });
 
   it('rejects garbage', () => {
@@ -68,6 +83,10 @@ describe('resolveDate', () => {
 describe('resolveTime', () => {
   it('resolves "now"', () => {
     assert.deepEqual(resolveTime('now'), { kind: 'now' });
+  });
+
+  it('resolves Hebrew "עכשיו" (now)', () => {
+    assert.deepEqual(resolveTime('עכשיו'), { kind: 'now' });
   });
 
   it('resolves "HH:MM"', () => {
