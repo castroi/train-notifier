@@ -18,6 +18,13 @@ export type TimeSlot = { kind: 'now' } | { kind: 'hm'; hh: number; mm: number };
 
 const TZ = 'Asia/Jerusalem';
 
+// Relative-date/time keywords, EN + HE (issue #19). Built through normalize()
+// so Hebrew final-letter folding (היום → היומ) is handled automatically, and so
+// a Hebrew-keyboard user need not switch layout to answer the When? prompt.
+const NOW_WORDS = new Set(['now', 'עכשיו'].map(normalize));
+const TODAY_WORDS = new Set(['today', 'היום'].map(normalize));
+const TOMORROW_WORDS = new Set(['tomorrow', 'מחר'].map(normalize));
+
 /** Jerusalem-local Y/M/D for an instant. */
 function jerusalemYMD(at: Date): { y: number; m: number; d: number } {
   const s = new Intl.DateTimeFormat('en-CA', {
@@ -82,9 +89,9 @@ function jerusalemWallClockToDate(y: number, m: number, d: number, hh: number, m
 /** Resolve a date token to a slot, or null if it is not an accepted date form. */
 export function resolveDate(token: string, now: Date): DateSlot | null {
   const t = normalize(token);
-  if (t === 'now') return { kind: 'now' };
-  if (t === 'today') return { kind: 'date', ...jerusalemYMD(now) };
-  if (t === 'tomorrow') {
+  if (NOW_WORDS.has(t)) return { kind: 'now' };
+  if (TODAY_WORDS.has(t)) return { kind: 'date', ...jerusalemYMD(now) };
+  if (TOMORROW_WORDS.has(t)) {
     return { kind: 'date', ...jerusalemYMD(new Date(now.getTime() + 86_400_000)) };
   }
   // D/M or D/M/YYYY — year defaults to the current Jerusalem year.
@@ -102,7 +109,7 @@ export function resolveDate(token: string, now: Date): DateSlot | null {
 /** Resolve a time token to a slot, or null if it is not an accepted time form. */
 export function resolveTime(token: string): TimeSlot | null {
   const t = normalize(token);
-  if (t === 'now') return { kind: 'now' };
+  if (NOW_WORDS.has(t)) return { kind: 'now' };
   const hm = t.match(/^(\d{1,2}):(\d{2})$/);
   if (hm) {
     const hh = Number(hm[1]);
