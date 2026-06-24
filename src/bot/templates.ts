@@ -177,9 +177,15 @@ export function badTime(): string {
   return "That's not a valid time. Type a time like 7:00, 19, or 12:30";
 }
 
-/** Follow-up nudge shown after every result (§8.5). */
+/** Follow-up nudge shown after every result (§8.5). Advertises refresh in
+ * English; the Hebrew triggers are accepted but never listed (issue #15). */
 export function resultsNudge(): string {
-  return 'Different date/time, or a new route?';
+  return 'Refresh, a different date/time, or a new route?';
+}
+
+/** Refresh word during an unfinished flow — route not yet resolved to results. */
+export function refreshNotReady(): string {
+  return 'Finish choosing your route first.';
 }
 
 /** A lone date/time arrived with no active wizard (e.g. after the TTL lapsed, §7.2). */

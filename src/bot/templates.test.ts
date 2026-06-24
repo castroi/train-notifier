@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { askTime, routeReport, wizardHeader, wizardReport, wizardRollover } from './templates.ts';
+import {
+  askTime,
+  refreshNotReady,
+  resultsNudge,
+  routeReport,
+  wizardHeader,
+  wizardReport,
+  wizardRollover,
+} from './templates.ts';
 import type { BotRoute } from './types.ts';
 
 const ROUTE: BotRoute = {
@@ -69,7 +77,7 @@ describe('wizardReport', () => {
     const out = wizardReport('Afula → Akko', LINES, juneAt(23, 17, 0), NOW, true);
     assert.equal(
       out,
-      'Afula → Akko · Tue 23 Jun, 17:00:\n • 04:59 → 06:09 · on time · plat 2\n\nDifferent date/time, or a new route?',
+      'Afula → Akko · Tue 23 Jun, 17:00:\n • 04:59 → 06:09 · on time · plat 2\n\nRefresh, a different date/time, or a new route?',
     );
   });
 });
@@ -85,7 +93,7 @@ describe('wizardRollover', () => {
     );
     assert.equal(
       out,
-      'No more trains today for Afula → Akko. Next service:\nAfula → Akko · Tue 23 Jun:\n • 05:21 → 06:30 · on time\n\nDifferent date/time, or a new route?',
+      'No more trains today for Afula → Akko. Next service:\nAfula → Akko · Tue 23 Jun:\n • 05:21 → 06:30 · on time\n\nRefresh, a different date/time, or a new route?',
     );
   });
 
@@ -98,5 +106,19 @@ describe('wizardRollover', () => {
       juneAt(23, 23, 55), // requested: a future day, not today
     );
     assert.match(out, /^No more trains that day for Afula → Akko\. Next service:/);
+  });
+});
+
+describe('resultsNudge', () => {
+  it('advertises refresh in English and lists no Hebrew', () => {
+    const out = resultsNudge();
+    assert.equal(out, 'Refresh, a different date/time, or a new route?');
+    assert.doesNotMatch(out, /[֐-׿]/);
+  });
+});
+
+describe('refreshNotReady', () => {
+  it('tells the user to finish choosing a route first', () => {
+    assert.equal(refreshNotReady(), 'Finish choosing your route first.');
   });
 });

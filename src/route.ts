@@ -32,6 +32,7 @@ import {
   customNotFound,
   customSameStation,
   customTooBroad,
+  refreshNotReady,
   resultsNudge,
 } from './bot/templates.ts';
 import { matchStation } from './rail/match.ts';
@@ -65,6 +66,8 @@ const RESERVED = wordSet('home', 'work', 'בית', 'עבודה');
 const CONTROL = wordSet('menu', 'help', 'תפריט', 'עזרה');
 const CANCEL = wordSet('0', 'cancel', 'x', 'ביטול');
 const BACK = wordSet('back'); // wizard: return to the previous step (§4.6)
+// wizard: re-run the last resolved route with fresh data (issue #15).
+const REFRESH = wordSet('refresh', 'again', 'רענן', 'שוב', 'עוד פעם');
 const YES = wordSet('yes', 'y', 'כן');
 const NO = wordSet('no', 'n', 'לא');
 
@@ -123,6 +126,11 @@ function directionalDest(text: string): string | null {
 /** True when the message looks like a custom route (separator or directional). */
 export function hasRouteSeparator(text: string): boolean {
   return splitRoute(text) !== null || directionalDest(text) !== null;
+}
+
+/** True when text is a refresh trigger (EN/HE, case-insensitive) (issue #15). */
+export function isRefreshWord(text: string): boolean {
+  return REFRESH.has(norm(text));
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +298,16 @@ export function continueRoute(
     return { kind: 'breakout', text };
   }
 
+  // Refresh re-runs a finished results view only. In any other in-progress step
+  // (route/origin/destination/confirm/date/time) the route isn't resolved to a
+  // result yet, so tell the user to finish choosing first (issue #15, note 1).
+  if (REFRESH.has(n)) {
+    if (flow.awaiting === 'results') {
+      return refreshResults(sender, flow, store, now);
+    }
+    return { kind: 'reply', text: refreshNotReady() };
+  }
+
   switch (flow.awaiting) {
     case 'route':
       return beginRoute(text, sender, store);
@@ -381,6 +399,25 @@ function results(
     when,
     isNow,
   };
+}
+
+/**
+ * Refresh: re-run the last resolved route from its stored slots (issue #15).
+ * Clock slots replay exactly; `now` slots re-resolve against the live clock via
+ * `combine`. Re-saving the flow re-stamps the 10-min TTL (rule 3). Only called
+ * when `flow.awaiting === 'results'`, so the slots are always present.
+ */
+function refreshResults(
+  sender: string,
+  flow: PendingFlow,
+  store: ConversationStore,
+  now: Date,
+): RouteOutcome {
+  const slots = routeSlots(flow);
+  const date = flow.slotDate ?? { kind: 'now' };
+  const time = flow.slotTime ?? { kind: 'now' };
+  saveFlow(sender, store, { awaiting: 'results', ...slots, slotDate: date, slotTime: time });
+  return results(slots, combine(date, time, now), date.kind === 'now');
 }
 
 /** A concrete calendar date for carry-over: the stored date, else today. */

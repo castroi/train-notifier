@@ -545,7 +545,7 @@ describe('wizard E2E', () => {
     const report = deps.sendCalls[1]!.message;
     assert.match(report, /^Binyamina → Nahariya · Today 22 Jun:/);
     assert.doesNotMatch(report, /Today 22 Jun,/); // day-only, no time
-    assert.match(report, /Different date\/time, or a new route\?$/);
+    assert.match(report, /Refresh, a different date\/time, or a new route\?$/);
     // Fetched at "now".
     assert.equal(deps.fetchCalls[0]!.when.getTime(), WIZ_NOW.getTime());
   });
@@ -614,6 +614,121 @@ describe('wizard E2E', () => {
 
     assert.equal(deps.sendCalls.length, 1);
     assert.match(deps.sendCalls[0]!.message, /don't have a route in mind/);
+    assert.equal(deps.fetchCalls.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Refresh end-to-end traces (issue #15 + extra notes)
+// ---------------------------------------------------------------------------
+
+describe('refresh E2E', () => {
+  it('clock query → refresh re-fetches the exact same datetime', async () => {
+    const deps = makeWizardDeps();
+    await converse(deps, ['בנימינה אל נהריה', 'tomorrow', '17:00', 'refresh']);
+
+    const first = deps.sendCalls[2]!.message;
+    const refreshed = deps.sendCalls[3]!.message;
+    assert.match(first, /^Binyamina → Nahariya · Tue 23 Jun, 17:00:/);
+    // Refresh replays the identical resolved-datetime header...
+    assert.equal(refreshed.split('\n')[0], first.split('\n')[0]);
+    // ...and actually re-queries the rail API at the same instant.
+    assert.equal(deps.fetchCalls.length, 2);
+    assert.equal(deps.fetchCalls[1]!.when.getTime(), deps.fetchCalls[0]!.when.getTime());
+    assert.equal(deps.fetchCalls[1]!.when.getTime(), Date.UTC(2026, 5, 23, 14, 0, 0));
+  });
+
+  it('"now" query → refresh re-resolves to the new current moment', async () => {
+    let nowMs = WIZ_NOW.getTime();
+    const fetchCalls: Array<{ when: Date }> = [];
+    const store = createConversationStore();
+    const deps = makeDeps({
+      conversation: store,
+      now: () => new Date(nowMs),
+      fetchRoutes: async (_f, _t, when) => {
+        fetchCalls.push({ when });
+        return travelsOn(when, [
+          ['19:08', '20:11'],
+          ['19:38', '20:41'],
+        ]);
+      },
+    });
+
+    await handleMessage(
+      makeMsg({ timestamp: 1, body: 'בנימינה אל נהריה' }),
+      BASE_CONFIG,
+      deps,
+      SALT,
+    );
+    await handleMessage(makeMsg({ timestamp: 2, body: 'now' }), BASE_CONFIG, deps, SALT);
+    nowMs += 6 * 60_000; // six minutes pass
+    await handleMessage(makeMsg({ timestamp: 3, body: 'עוד פעם' }), BASE_CONFIG, deps, SALT);
+
+    assert.equal(fetchCalls.length, 2);
+    assert.equal(fetchCalls[0]!.when.getTime(), WIZ_NOW.getTime());
+    assert.equal(fetchCalls[1]!.when.getTime(), WIZ_NOW.getTime() + 6 * 60_000);
+    // Day-only header on both (a "now" query never shows a clock time).
+    assert.match(deps.sendCalls[2]!.message, /· Today 22 Jun:/);
+    assert.doesNotMatch(deps.sendCalls[2]!.message, /Today 22 Jun,/);
+  });
+
+  it('refresh re-stamps the 10-min TTL (survives past the original expiry)', async () => {
+    let clock = WIZ_NOW.getTime();
+    const store = createConversationStore({ now: () => clock });
+    const deps = makeDeps({
+      conversation: store,
+      now: () => new Date(clock),
+      fetchRoutes: async (_f, _t, when) =>
+        travelsOn(when, [
+          ['19:08', '20:11'],
+          ['19:38', '20:41'],
+        ]),
+    });
+
+    await handleMessage(
+      makeMsg({ timestamp: 1, body: 'בנימינה אל נהריה' }),
+      BASE_CONFIG,
+      deps,
+      SALT,
+    );
+    await handleMessage(makeMsg({ timestamp: 2, body: 'tomorrow' }), BASE_CONFIG, deps, SALT);
+    await handleMessage(makeMsg({ timestamp: 3, body: '17:00' }), BASE_CONFIG, deps, SALT); // results
+    clock += 9 * 60_000; // minute 9 — still alive; refresh re-stamps
+    await handleMessage(makeMsg({ timestamp: 4, body: 'refresh' }), BASE_CONFIG, deps, SALT);
+    clock += 8 * 60_000; // minute 17 overall — past the ORIGINAL 10-min expiry
+    await handleMessage(makeMsg({ timestamp: 5, body: 'refresh' }), BASE_CONFIG, deps, SALT);
+
+    // The 2nd refresh still produced a result (not the no-route nudge).
+    assert.equal(deps.sendCalls.length, 5);
+    assert.match(deps.sendCalls[4]!.message, /^Binyamina → Nahariya · Tue 23 Jun, 17:00:/);
+  });
+
+  it('refresh with no/expired context → "no route in mind", no fetch', async () => {
+    const deps = makeWizardDeps();
+    await converse(deps, ['refresh']);
+
+    assert.equal(deps.sendCalls.length, 1);
+    assert.match(deps.sendCalls[0]!.message, /don't have a route in mind/);
+    assert.equal(deps.fetchCalls.length, 0);
+  });
+
+  it('Hebrew refresh with no context is also recognised (no menu dump)', async () => {
+    const deps = makeWizardDeps();
+    await converse(deps, ['רענן']);
+
+    assert.match(deps.sendCalls[0]!.message, /don't have a route in mind/);
+    assert.equal(deps.fetchCalls.length, 0);
+  });
+
+  it('refresh while picking a station → finish-route message, flow preserved', async () => {
+    const deps = makeWizardDeps();
+    // בנימינה אל חיפה: origin accepts, destination disambiguates → awaiting a pick.
+    await converse(deps, ['בנימינה אל חיפה', 'רענן', '2']);
+
+    assert.match(deps.sendCalls[0]!.message, /Which destination/i);
+    assert.match(deps.sendCalls[1]!.message, /finish choosing/i);
+    // The disambiguation flow survived: the numeric pick still advances to the date step.
+    assert.match(deps.sendCalls[2]!.message, /^When\?/);
     assert.equal(deps.fetchCalls.length, 0);
   });
 });
