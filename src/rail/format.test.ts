@@ -59,6 +59,7 @@ describe('formatTrainLine', () => {
       delayMin: 0,
       platform: 2,
       dayNote: '',
+      departEpoch: 0,
     });
     assert.equal(line, '07:30 → 08:15 · on time · plat 2');
   });
@@ -70,6 +71,7 @@ describe('formatTrainLine', () => {
       delayMin: 5,
       platform: 3,
       dayNote: '',
+      departEpoch: 0,
     });
     assert.equal(line, '07:30 → 08:15 · +5 min · plat 3');
   });
@@ -81,6 +83,7 @@ describe('formatTrainLine', () => {
       delayMin: 0,
       platform: 0,
       dayNote: '',
+      departEpoch: 0,
     });
     assert.equal(line, '09:00 → 09:45 · on time');
   });
@@ -92,6 +95,7 @@ describe('formatTrainLine', () => {
       delayMin: -2,
       platform: 1,
       dayNote: '',
+      departEpoch: 0,
     });
     assert.equal(line, '10:00 → 10:30 · on time · plat 1');
   });
@@ -103,6 +107,7 @@ describe('formatTrainLine', () => {
       delayMin: 0,
       platform: 1,
       dayNote: 'tomorrow',
+      departEpoch: 0,
     });
     assert.equal(line, '05:45 → 06:18 · on time · plat 1 · tomorrow');
   });

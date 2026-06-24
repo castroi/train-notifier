@@ -7,6 +7,8 @@ export interface TrainSummary {
   platform: number;
   /** Day marker relative to "now": "" for today, "tomorrow", or e.g. "Thu 19/06". */
   dayNote: string;
+  /** Absolute departure epoch (ms) — lets the wizard render the service-day header. */
+  departEpoch: number;
 }
 
 function toJerusalemHHMM(timeStr: string): string {
@@ -114,6 +116,7 @@ export function extractTrains(
       delayMin,
       platform: firstTrain.originPlatform,
       dayNote: dayNoteFor(departMs, nowMs),
+      departEpoch: departMs,
     });
   }
 

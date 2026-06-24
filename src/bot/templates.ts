@@ -112,9 +112,9 @@ export function customClarifyReserved(word: string): string {
   return `"${word}" is a saved route, not a station. Type a station name, or send "${word}" on its own for that route.`;
 }
 
-/** Pending custom flow aborted. */
+/** Pending custom flow / wizard aborted (§4.6). */
 export function customCancelled(): string {
-  return '(custom route cancelled)';
+  return 'Cancelled. Send a route any time (like Afula to Akko).';
 }
 
 /** No station matched; offer the closest suggestions as a menu. */
@@ -136,22 +136,112 @@ export function customSameStation(): string {
   return 'Origin and destination are the same station — please send a different route.';
 }
 
-/**
- * Custom-route schedule report. `routeLabel` is "<From EN> → <To EN>" built by
- * the caller; lines are pre-formatted train strings.
- */
-export function customReport(
-  routeLabel: string,
-  lines: string[],
-  now: Date,
-  firstDayNote: string,
-): string {
-  const header = `${routeLabel} — ${firstDayNote || reportDate(now)}:`;
-  const bullets = lines.map((l) => ` • ${l}`).join('\n');
-  return `${header}\n${bullets}`;
-}
-
 /** Resolved route but the API returned zero upcoming trains. */
 export function customNoTrains(routeLabel: string): string {
   return `No upcoming departures for ${routeLabel}.`;
+}
+
+// ---------------------------------------------------------------------------
+// Wizard templates (wizard plan §5/§6/§8). Prompts are bounded; every result
+// echoes the resolved absolute datetime as a safeguard against a wrong slot.
+// ---------------------------------------------------------------------------
+
+/** "YYYY-MM-DD" for an instant, in Asia/Jerusalem (day-equality check). */
+function jerusalemDateStr(d: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Jerusalem',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(d);
+}
+
+/** Date prompt — entry to the wizard after a route resolves (§4.1). */
+export function askDate(): string {
+  return 'When?\nnow / today / tomorrow / custom date (like 17/09)';
+}
+
+/** Time prompt. `dayWord` (e.g. "tomorrow") personalises it: "When tomorrow?". */
+export function askTime(dayWord?: string): string {
+  const head = dayWord ? `When ${dayWord}?` : 'When?';
+  return `${head}\nnow / custom time (like 7, 19, 12:30)`;
+}
+
+/** Invalid date input — restate the accepted forms, stay on the step (§6.3). */
+export function badDate(): string {
+  return "Didn't catch that. Type one of: now / today / tomorrow / a date like 17/09";
+}
+
+/** Invalid time input — restate the accepted forms, stay on the step (§6.3). */
+export function badTime(): string {
+  return "That's not a valid time. Type a time like 7:00, 19, or 12:30";
+}
+
+/** Follow-up nudge shown after every result (§8.5). */
+export function resultsNudge(): string {
+  return 'Different date/time, or a new route?';
+}
+
+/** A lone date/time arrived with no active wizard (e.g. after the TTL lapsed, §7.2). */
+export function wizardNoRoute(): string {
+  return 'I don\'t have a route in mind — send one like "Afula to Akko" first.';
+}
+
+/**
+ * Resolved-datetime header for a wizard result (§8.2):
+ *   now / day-only → "<label> · Today 22 Jun:" or "<label> · Tue 23 Jun:"
+ *   with time      → "<label> · Tue 23 Jun, 17:00:"
+ * Only the current Jerusalem day is labelled "Today"; every other day shows its
+ * weekday (so tomorrow renders "Tue 23 Jun", per the spec examples).
+ */
+export function wizardHeader(label: string, when: Date, now: Date, showTime: boolean): string {
+  const dayMon = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jerusalem',
+    day: 'numeric',
+    month: 'short',
+  }).format(when); // "22 Jun"
+  const dayPart =
+    jerusalemDateStr(when) === jerusalemDateStr(now)
+      ? `Today ${dayMon}`
+      : `${new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', weekday: 'short' }).format(when)} ${dayMon}`;
+  const timePart = showTime
+    ? `, ${new Intl.DateTimeFormat('en-GB', {
+        timeZone: 'Asia/Jerusalem',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      }).format(when)}`
+    : '';
+  return `${label} · ${dayPart}${timePart}:`;
+}
+
+/** Full wizard result: datetime header + bulleted lines + the follow-up nudge. */
+export function wizardReport(
+  label: string,
+  lines: string[],
+  when: Date,
+  now: Date,
+  showTime: boolean,
+): string {
+  const header = wizardHeader(label, when, now, showTime);
+  const bullets = lines.map((l) => ` • ${l}`).join('\n');
+  return `${header}\n${bullets}\n\n${resultsNudge()}`;
+}
+
+/**
+ * No service left on the requested day → roll to the next service day (§8.4).
+ * `serviceDay` is the first remaining train's departure instant; `requestedWhen`
+ * is the datetime the user asked for (so we only say "today" when it truly is).
+ */
+export function wizardRollover(
+  label: string,
+  lines: string[],
+  serviceDay: Date,
+  now: Date,
+  requestedWhen: Date,
+): string {
+  const header = wizardHeader(label, serviceDay, now, false);
+  const bullets = lines.map((l) => ` • ${l}`).join('\n');
+  const day = jerusalemDateStr(requestedWhen) === jerusalemDateStr(now) ? 'today' : 'that day';
+  return `No more trains ${day} for ${label}. Next service:\n${header}\n${bullets}\n\n${resultsNudge()}`;
 }

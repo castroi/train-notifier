@@ -17,6 +17,27 @@ function reply(o: ReturnType<typeof beginRoute>): string {
   return o.text;
 }
 
+// A resolved route now hands off to the wizard's date step: the outcome is the
+// "When?" prompt and the slots are stored on the pending flow.
+function expectDateStep(
+  o: ReturnType<typeof beginRoute>,
+  store: ConversationStore,
+  expected: { fromId: number; toId: number; label: string },
+  sender: string = U,
+): void {
+  assert.equal(o.kind, 'reply');
+  if (o.kind !== 'reply') throw new Error('not a reply');
+  assert.match(o.text, /^When\?/);
+  const f = getFlow(store, sender);
+  assert.equal(f.awaiting, 'date');
+  assert.equal(f.originId, expected.fromId);
+  assert.equal(f.destId, expected.toId);
+  assert.equal(f.routeLabel, expected.label);
+}
+
+// Fixed reference instant for wizard tests: 2026-06-22 12:00 Asia/Jerusalem.
+const NOW = new Date(Date.UTC(2026, 5, 22, 9, 0, 0));
+
 // ---------------------------------------------------------------------------
 // hasRouteSeparator
 // ---------------------------------------------------------------------------
@@ -38,16 +59,10 @@ describe('hasRouteSeparator', () => {
 // ---------------------------------------------------------------------------
 
 describe('beginRoute — one-shot accept/accept', () => {
-  it('בנימינה אל נהריה → resolved 2800 → 1600', () => {
+  it('בנימינה אל נהריה → resolved 2800 → 1600, enters the date step', () => {
     const store = createConversationStore();
     const out = beginRoute('בנימינה אל נהריה', U, store);
-    assert.deepEqual(out, {
-      kind: 'resolved',
-      fromId: 2800,
-      toId: 1600,
-      label: 'Binyamina → Nahariya',
-    });
-    assert.equal(store.get(U), undefined); // flow cleared on resolve
+    expectDateStep(out, store, { fromId: 2800, toId: 1600, label: 'Binyamina → Nahariya' });
   });
 });
 
@@ -66,8 +81,7 @@ describe('beginRoute — TLV to afula', () => {
     assert.equal(flow.destText, 'afula');
 
     const done = continueRoute('2', U, getFlow(store), store);
-    assert.deepEqual(done, {
-      kind: 'resolved',
+    expectDateStep(done, store, {
       fromId: 4600,
       toId: 1260,
       label: 'Tel Aviv - HaShalom → Afula R.Eitan',
@@ -94,10 +108,7 @@ describe('beginRoute — double menu', () => {
 
     // pick destination Hof HaKarmel (candidates are id-ascending: 2100, 2200, 2300)
     const done = continueRoute('3', U, getFlow(store), store);
-    assert.equal(done.kind, 'resolved');
-    if (done.kind !== 'resolved') return;
-    assert.equal(done.fromId, 9100);
-    assert.equal(done.toId, 2300);
+    expectDateStep(done, store, { fromId: 9100, toId: 2300, label: getFlow(store).routeLabel! });
   });
 });
 
@@ -121,10 +132,7 @@ describe('confirm flow', () => {
     assert.deepEqual(destFlow.candidates, ['2100', '2200', '2300']);
 
     const done = continueRoute('1', U, getFlow(store), store);
-    assert.equal(done.kind, 'resolved');
-    if (done.kind !== 'resolved') return;
-    assert.equal(done.fromId, 8600);
-    assert.equal(done.toId, 2100);
+    expectDateStep(done, store, { fromId: 8600, toId: 2100, label: getFlow(store).routeLabel! });
   });
 
   it('"1" confirms (numbered yes)', () => {
@@ -178,12 +186,7 @@ describe('confirm flow', () => {
     reply(continueRoute('yes', U, getFlow(store), store));
     assert.equal(getFlow(store).confirmTarget, '1840'); // Karmiel
     const done = continueRoute('yes', U, getFlow(store), store);
-    assert.deepEqual(done, {
-      kind: 'resolved',
-      fromId: 1600,
-      toId: 1840,
-      label: 'Nahariya → Karmiel',
-    });
+    expectDateStep(done, store, { fromId: 1600, toId: 1840, label: 'Nahariya → Karmiel' });
   });
 });
 
@@ -227,12 +230,7 @@ describe('directional and guided entry', () => {
     assert.equal(getFlow(store).destText, 'afula');
 
     const done = continueRoute('בנימינה', U, getFlow(store), store);
-    assert.deepEqual(done, {
-      kind: 'resolved',
-      fromId: 2800,
-      toId: 1260,
-      label: 'Binyamina → Afula R.Eitan',
-    });
+    expectDateStep(done, store, { fromId: 2800, toId: 1260, label: 'Binyamina → Afula R.Eitan' });
   });
 
   it('enterCustomMode then bare origin → asks destination → resolved', () => {
@@ -246,10 +244,7 @@ describe('directional and guided entry', () => {
 
     reply(continueRoute('חיפה', U, getFlow(store), store)); // dest menu(3)
     const done = continueRoute('1', U, getFlow(store), store);
-    assert.equal(done.kind, 'resolved');
-    if (done.kind !== 'resolved') return;
-    assert.equal(done.fromId, 9100);
-    assert.equal(done.toId, 2100);
+    expectDateStep(done, store, { fromId: 9100, toId: 2100, label: getFlow(store).routeLabel! });
   });
 });
 
@@ -303,5 +298,146 @@ describe('per-sender isolation', () => {
     reply(beginRoute('TLV to afula', 'b', store));
     assert.deepEqual(getFlow(store, 'a').candidates, ['9100', '9800']);
     assert.deepEqual(getFlow(store, 'b').candidates, ['3700', '4600', '3600', '4900']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wizard: date → time → results (plan §4.3–§4.6, §8.3)
+// ---------------------------------------------------------------------------
+
+/** Resolve "Binyamina → Nahariya" and land on the date step. */
+function atDateStep(store: ConversationStore): void {
+  expectDateStep(beginRoute('בנימינה אל נהריה', U, store), store, {
+    fromId: 2800,
+    toId: 1600,
+    label: 'Binyamina → Nahariya',
+  });
+}
+
+describe('wizard date step', () => {
+  it('"now" skips the time step and emits a now result', () => {
+    const store = createConversationStore();
+    atDateStep(store);
+    const out = continueRoute('now', U, getFlow(store), store, NOW);
+    assert.deepEqual(out, {
+      kind: 'results',
+      fromId: 2800,
+      toId: 1600,
+      label: 'Binyamina → Nahariya',
+      when: NOW,
+      isNow: true,
+    });
+    assert.equal(getFlow(store).awaiting, 'results');
+  });
+
+  it('a day-only date advances to the time step and personalises the prompt', () => {
+    const store = createConversationStore();
+    atDateStep(store);
+    const out = continueRoute('tomorrow', U, getFlow(store), store, NOW);
+    assert.match(reply(out), /^When tomorrow\?/);
+    const f = getFlow(store);
+    assert.equal(f.awaiting, 'time');
+    assert.deepEqual(f.slotDate, { kind: 'date', y: 2026, m: 6, d: 23 });
+  });
+
+  it('invalid date re-asks and stays on the date step', () => {
+    const store = createConversationStore();
+    atDateStep(store);
+    const out = continueRoute('banana', U, getFlow(store), store, NOW);
+    assert.match(reply(out), /Didn't catch that/);
+    assert.equal(getFlow(store).awaiting, 'date');
+  });
+});
+
+describe('wizard time step', () => {
+  it('valid time resolves to an absolute departure and enters results', () => {
+    const store = createConversationStore();
+    atDateStep(store);
+    reply(continueRoute('tomorrow', U, getFlow(store), store, NOW));
+    const out = continueRoute('17:00', U, getFlow(store), store, NOW);
+    assert.equal(out.kind, 'results');
+    if (out.kind !== 'results') return;
+    assert.equal(out.isNow, false);
+    // 2026-06-23 17:00 Asia/Jerusalem (IDT) = 14:00Z.
+    assert.equal(out.when.getTime(), Date.UTC(2026, 5, 23, 14, 0, 0));
+  });
+
+  it('invalid time re-asks and stays on the time step', () => {
+    const store = createConversationStore();
+    atDateStep(store);
+    reply(continueRoute('tomorrow', U, getFlow(store), store, NOW));
+    const out = continueRoute('25:00', U, getFlow(store), store, NOW);
+    assert.match(reply(out), /not a valid time/);
+    assert.equal(getFlow(store).awaiting, 'time');
+  });
+
+  it('"back" returns to the date step', () => {
+    const store = createConversationStore();
+    atDateStep(store);
+    reply(continueRoute('tomorrow', U, getFlow(store), store, NOW));
+    const out = continueRoute('back', U, getFlow(store), store, NOW);
+    assert.match(reply(out), /^When\?/);
+    assert.equal(getFlow(store).awaiting, 'date');
+  });
+});
+
+describe('wizard results follow-ups (carry-over §8.3)', () => {
+  /** Drive to a results state at tomorrow 17:00. */
+  function atResults(store: ConversationStore): void {
+    atDateStep(store);
+    reply(continueRoute('tomorrow', U, getFlow(store), store, NOW));
+    const out = continueRoute('17:00', U, getFlow(store), store, NOW);
+    assert.equal(out.kind, 'results');
+  }
+
+  it('a lone time keeps the last date', () => {
+    const store = createConversationStore();
+    atResults(store);
+    const out = continueRoute('12:00', U, getFlow(store), store, NOW);
+    assert.equal(out.kind, 'results');
+    if (out.kind !== 'results') return;
+    // Still 23 Jun, now at 12:00 (09:00Z).
+    assert.equal(out.when.getTime(), Date.UTC(2026, 5, 23, 9, 0, 0));
+  });
+
+  it('a lone date keeps the last time', () => {
+    const store = createConversationStore();
+    atResults(store);
+    const out = continueRoute('today', U, getFlow(store), store, NOW);
+    assert.equal(out.kind, 'results');
+    if (out.kind !== 'results') return;
+    // Today (22 Jun) carrying 17:00 (14:00Z).
+    assert.equal(out.when.getTime(), Date.UTC(2026, 5, 22, 14, 0, 0));
+  });
+
+  it('a new route resets all slots and re-asks the date', () => {
+    const store = createConversationStore();
+    atResults(store);
+    const out = continueRoute('TLV to afula', U, getFlow(store), store, NOW);
+    // New route needs origin disambiguation (TLV → menu), so it replies first.
+    assert.equal(out.kind, 'reply');
+    const f = getFlow(store);
+    assert.equal(f.awaiting, 'origin');
+    assert.equal(f.slotDate, undefined);
+    assert.equal(f.slotTime, undefined);
+  });
+});
+
+describe('wizard cancel / restart', () => {
+  it('"cancel" drops the flow with a friendly message', () => {
+    const store = createConversationStore();
+    atDateStep(store);
+    const out = continueRoute('cancel', U, getFlow(store), store, NOW);
+    assert.match(reply(out), /Cancelled\. Send a route/);
+    assert.equal(store.get(U), undefined);
+  });
+
+  it('a new "X to Y" mid-wizard resets cleanly', () => {
+    const store = createConversationStore();
+    atDateStep(store);
+    reply(continueRoute('tomorrow', U, getFlow(store), store, NOW)); // now on the time step
+    const out = continueRoute('בנימינה אל נהריה', U, getFlow(store), store, NOW);
+    // Resolves one-shot back to a fresh date step.
+    expectDateStep(out, store, { fromId: 2800, toId: 1600, label: 'Binyamina → Nahariya' });
   });
 });
