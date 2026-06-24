@@ -36,6 +36,7 @@ import {
   continueRoute,
   enterCustomMode,
   hasRouteSeparator,
+  isRefreshWord,
   type RouteOutcome,
 } from './route.ts';
 import type { IncomingMessage } from './signal/types.ts';
@@ -285,6 +286,14 @@ export async function handleMessage(
       }
     } else if (CUSTOM_ENTRY.has(normalize(coreBody).trim())) {
       await dispatchCustom(enterCustomMode(sender, store));
+      return;
+    } else if (isRefreshWord(coreBody)) {
+      // Refresh word with no live context (never set or TTL lapsed) → tell the
+      // user to send a route first rather than dumping the menu (issue #15).
+      await withDeadline(
+        (signal) => deps.send(botNumber, ownerUuid, wizardNoRoute(), signal),
+        25_000,
+      );
       return;
     } else if (hasRouteSeparator(coreBody)) {
       await dispatchCustom(beginRoute(coreBody, sender, store));

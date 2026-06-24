@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { type ConversationStore, createConversationStore } from './bot/conversation.ts';
-import { beginRoute, continueRoute, enterCustomMode, hasRouteSeparator } from './route.ts';
+import {
+  beginRoute,
+  continueRoute,
+  enterCustomMode,
+  hasRouteSeparator,
+  isRefreshWord,
+} from './route.ts';
 
 const U = 'sender-1';
 
@@ -439,5 +445,97 @@ describe('wizard cancel / restart', () => {
     const out = continueRoute('בנימינה אל נהריה', U, getFlow(store), store, NOW);
     // Resolves one-shot back to a fresh date step.
     expectDateStep(out, store, { fromId: 2800, toId: 1600, label: 'Binyamina → Nahariya' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Refresh — re-run the last resolved route (issue #15)
+// ---------------------------------------------------------------------------
+
+describe('wizard refresh', () => {
+  const TRIGGERS = ['refresh', 'again', 'רענן', 'שוב', 'עוד פעם'];
+
+  /** Drive to a results state at tomorrow (23 Jun) 17:00 — a clock query. */
+  function atClockResults(store: ConversationStore): void {
+    atDateStep(store);
+    reply(continueRoute('tomorrow', U, getFlow(store), store, NOW));
+    assert.equal(continueRoute('17:00', U, getFlow(store), store, NOW).kind, 'results');
+  }
+
+  it('replays the exact clock datetime on refresh', () => {
+    const store = createConversationStore();
+    atClockResults(store);
+    const out = continueRoute('refresh', U, getFlow(store), store, NOW);
+    assert.equal(out.kind, 'results');
+    if (out.kind !== 'results') return;
+    assert.equal(out.isNow, false);
+    assert.equal(out.when.getTime(), Date.UTC(2026, 5, 23, 14, 0, 0)); // 23 Jun 17:00 IDT
+    assert.equal(out.label, 'Binyamina → Nahariya');
+    assert.equal(getFlow(store).awaiting, 'results');
+  });
+
+  it('recognises every trigger word (EN/HE + mixed case) in results state', () => {
+    for (const word of [...TRIGGERS, 'ReFrEsh']) {
+      const store = createConversationStore();
+      atClockResults(store);
+      assert.equal(continueRoute(word, U, getFlow(store), store, NOW).kind, 'results', word);
+    }
+  });
+
+  it('re-resolves a "now" query to the current moment on refresh', () => {
+    const store = createConversationStore();
+    atDateStep(store);
+    const first = continueRoute('now', U, getFlow(store), store, NOW);
+    assert.equal(first.kind, 'results');
+    if (first.kind !== 'results') return;
+    assert.equal(first.when.getTime(), NOW.getTime());
+    // 6 minutes pass; refresh must return the trains from the new "now".
+    const later = new Date(NOW.getTime() + 6 * 60_000);
+    const out = continueRoute('עוד פעם', U, getFlow(store), store, later);
+    assert.equal(out.kind, 'results');
+    if (out.kind !== 'results') return;
+    assert.equal(out.isNow, true);
+    assert.equal(out.when.getTime(), later.getTime());
+  });
+
+  it('re-stamps the 10-min TTL on refresh', () => {
+    let clock = 0;
+    const store = createConversationStore({ now: () => clock });
+    atClockResults(store); // stamped expiresAt = 600_000
+    clock = 599_000; // still alive
+    assert.equal(continueRoute('refresh', U, getFlow(store), store, NOW).kind, 'results');
+    clock = 605_000; // past the ORIGINAL expiry, within the refreshed window
+    assert.notEqual(store.get(U), undefined); // survived → TTL was reset
+  });
+
+  it('refresh while picking a station says to finish the route first', () => {
+    const store = createConversationStore();
+    reply(beginRoute('TLV to afula', U, store)); // origin disambiguation menu
+    assert.equal(getFlow(store).awaiting, 'origin');
+    const out = continueRoute('רענן', U, getFlow(store), store, NOW);
+    assert.match(reply(out), /finish choosing/i);
+    // The flow is preserved so the user can still pick.
+    const f = getFlow(store);
+    assert.equal(f.awaiting, 'origin');
+    assert.deepEqual(f.candidates, ['3700', '4600', '3600', '4900']);
+  });
+
+  it('refresh at the date step is also not-ready (two-bucket model)', () => {
+    const store = createConversationStore();
+    atDateStep(store);
+    const out = continueRoute('refresh', U, getFlow(store), store, NOW);
+    assert.match(reply(out), /finish choosing/i);
+    assert.equal(getFlow(store).awaiting, 'date');
+  });
+});
+
+describe('isRefreshWord', () => {
+  it('recognises every trigger (EN/HE/mixed case/padded) and nothing else', () => {
+    for (const w of ['refresh', 'again', 'רענן', 'שוב', 'עוד פעם', 'ReFrEsh', '  refresh  ']) {
+      assert.equal(isRefreshWord(w), true, w);
+    }
+    for (const w of ['refreshed', 'haifa', '', 'to afula']) {
+      assert.equal(isRefreshWord(w), false, w);
+    }
   });
 });
