@@ -253,3 +253,65 @@ describe('ConversationStore — optional fields', () => {
     assert.equal(flow.confirmTarget, undefined);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Wizard slots (plan §2/§3)
+// ---------------------------------------------------------------------------
+
+describe('ConversationStore — wizard slots', () => {
+  it('round-trips a date-awaiting flow with resolved route + date slots', () => {
+    const store = createConversationStore({ ttlMs: 60_000 });
+
+    store.set({
+      sender: 'kim',
+      awaiting: 'date',
+      candidates: [],
+      originId: 1260,
+      destId: 2300,
+      routeLabel: 'Afula → Akko',
+      slotDate: { kind: 'date', y: 2026, m: 6, d: 23 },
+    });
+
+    const flow = store.get('kim');
+    assert.ok(flow !== undefined);
+    assert.equal(flow.awaiting, 'date');
+    assert.equal(flow.originId, 1260);
+    assert.equal(flow.destId, 2300);
+    assert.equal(flow.routeLabel, 'Afula → Akko');
+    assert.deepEqual(flow.slotDate, { kind: 'date', y: 2026, m: 6, d: 23 });
+  });
+
+  it('round-trips a results-awaiting flow carrying both date and time slots', () => {
+    const store = createConversationStore({ ttlMs: 60_000 });
+
+    store.set({
+      sender: 'leo',
+      awaiting: 'results',
+      candidates: [],
+      originId: 1260,
+      destId: 2300,
+      routeLabel: 'Afula → Akko',
+      slotDate: { kind: 'date', y: 2026, m: 6, d: 23 },
+      slotTime: { kind: 'hm', hh: 17, mm: 0 },
+    });
+
+    const flow = store.get('leo');
+    assert.ok(flow !== undefined);
+    assert.equal(flow.awaiting, 'results');
+    assert.deepEqual(flow.slotTime, { kind: 'hm', hh: 17, mm: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Default TTL (wizard plan §7.2 — 10 minutes)
+// ---------------------------------------------------------------------------
+
+describe('ConversationStore — default ttl is 10 minutes', () => {
+  it('stamps expiresAt 600_000 ms ahead by default', () => {
+    const fakeNow = 1_000_000;
+    const store = createConversationStore({ now: () => fakeNow });
+
+    const flow = store.set(makeFlow('mona'));
+    assert.equal(flow.expiresAt, fakeNow + 600_000);
+  });
+});

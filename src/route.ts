@@ -17,8 +17,13 @@
  */
 
 import type { ConversationStore, PendingFlow } from './bot/conversation.ts';
+import { combine, type DateSlot, describeDay, resolveDate, resolveTime } from './bot/datetime.ts';
 import { normalize } from './bot/normalize.ts';
 import {
+  askDate,
+  askTime,
+  badDate,
+  badTime,
   customAskRoute,
   customCancelled,
   customClarifyReserved,
@@ -27,13 +32,16 @@ import {
   customNotFound,
   customSameStation,
   customTooBroad,
+  resultsNudge,
 } from './bot/templates.ts';
 import { matchStation } from './rail/match.ts';
 import { stationName } from './rail/stations.ts';
 
 export type RouteOutcome =
   | { kind: 'reply'; text: string }
-  | { kind: 'resolved'; fromId: number; toId: number; label: string }
+  // A fully-resolved route + departure datetime; the pipeline fetches & formats.
+  // `isNow` selects the day-only header (the "now" fast path skips the time).
+  | { kind: 'results'; fromId: number; toId: number; label: string; when: Date; isNow: boolean }
   | { kind: 'breakout'; text: string }; // reserved/control word during a flow → run core path
 
 type Role = 'origin' | 'destination';
@@ -55,7 +63,8 @@ function wordSet(...words: string[]): Set<string> {
 
 const RESERVED = wordSet('home', 'work', 'בית', 'עבודה');
 const CONTROL = wordSet('menu', 'help', 'תפריט', 'עזרה');
-const CANCEL = wordSet('0', 'cancel', 'ביטול');
+const CANCEL = wordSet('0', 'cancel', 'x', 'ביטול');
+const BACK = wordSet('back'); // wizard: return to the previous step (§4.6)
 const YES = wordSet('yes', 'y', 'כן');
 const NO = wordSet('no', 'n', 'לא');
 
@@ -218,16 +227,19 @@ function resolveRole(
   if (originId === undefined) {
     throw new Error('resolveRole: destination resolved without an origin');
   }
-  store.clear(sender);
   if (originId === id) {
+    store.clear(sender);
     return { kind: 'reply', text: customSameStation() };
   }
-  return {
-    kind: 'resolved',
-    fromId: Number(originId),
-    toId: Number(id),
-    label: `${labelEn(originId)} → ${labelEn(id)}`,
-  };
+  // Route is resolved — hand off to the wizard's date step rather than fetching
+  // immediately (the slots persist for the date/time/results follow-ups, §4.1).
+  saveFlow(sender, store, {
+    awaiting: 'date',
+    originId: Number(originId),
+    destId: Number(id),
+    routeLabel: `${labelEn(originId)} → ${labelEn(id)}`,
+  });
+  return { kind: 'reply', text: askDate() };
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +276,7 @@ export function continueRoute(
   sender: string,
   flow: PendingFlow,
   store: ConversationStore,
+  now: Date = new Date(),
 ): RouteOutcome {
   const n = norm(text);
 
@@ -280,6 +293,15 @@ export function continueRoute(
   switch (flow.awaiting) {
     case 'route':
       return beginRoute(text, sender, store);
+
+    case 'date':
+      return handleDate(text, sender, flow, store, now);
+
+    case 'time':
+      return handleTime(text, sender, flow, store, now);
+
+    case 'results':
+      return handleResults(text, sender, flow, store, now);
 
     case 'confirm': {
       const ctx: Ctx = { origin: flow.origin, destText: flow.destText };
@@ -331,4 +353,133 @@ export function continueRoute(
       return applyMatch(text, 'destination', { origin: flow.origin }, sender, store);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Wizard steps (plan §4.3–§4.5). The route is already resolved; these fill the
+// date/time slots and emit a `results` outcome for the pipeline to fetch.
+// ---------------------------------------------------------------------------
+
+/** The resolved-route slots carried through every wizard step. */
+function routeSlots(flow: PendingFlow): { originId: number; destId: number; routeLabel: string } {
+  if (flow.originId === undefined || flow.destId === undefined || flow.routeLabel === undefined) {
+    throw new Error('wizard step reached without a resolved route');
+  }
+  return { originId: flow.originId, destId: flow.destId, routeLabel: flow.routeLabel };
+}
+
+function results(
+  slots: { originId: number; destId: number; routeLabel: string },
+  when: Date,
+  isNow: boolean,
+): RouteOutcome {
+  return {
+    kind: 'results',
+    fromId: slots.originId,
+    toId: slots.destId,
+    label: slots.routeLabel,
+    when,
+    isNow,
+  };
+}
+
+/** A concrete calendar date for carry-over: the stored date, else today. */
+function carryDate(flow: PendingFlow, now: Date): DateSlot {
+  if (flow.slotDate?.kind === 'date') return flow.slotDate;
+  return resolveDate('today', now) as DateSlot; // 'today' always yields a date
+}
+
+function handleDate(
+  text: string,
+  sender: string,
+  flow: PendingFlow,
+  store: ConversationStore,
+  now: Date,
+): RouteOutcome {
+  // A fresh "X to Y" mid-flow resets everything (§4.6).
+  if (hasRouteSeparator(text)) {
+    store.clear(sender);
+    return beginRoute(text, sender, store);
+  }
+  if (BACK.has(norm(text))) {
+    // The step before the date is the route entry — re-ask for a route.
+    saveFlow(sender, store, { awaiting: 'route' });
+    return { kind: 'reply', text: customAskRoute() };
+  }
+  const slots = routeSlots(flow);
+  const date = resolveDate(text, now);
+  if (date === null) {
+    return { kind: 'reply', text: badDate() }; // stay on the step (§6.2)
+  }
+  if (date.kind === 'now') {
+    // "now" sets date+time to now and skips the time step entirely (§4.3).
+    saveFlow(sender, store, {
+      awaiting: 'results',
+      ...slots,
+      slotDate: date,
+      slotTime: { kind: 'now' },
+    });
+    return results(slots, now, true);
+  }
+  saveFlow(sender, store, { awaiting: 'time', ...slots, slotDate: date });
+  return { kind: 'reply', text: askTime(describeDay(date, now)) };
+}
+
+function handleTime(
+  text: string,
+  sender: string,
+  flow: PendingFlow,
+  store: ConversationStore,
+  now: Date,
+): RouteOutcome {
+  if (hasRouteSeparator(text)) {
+    store.clear(sender);
+    return beginRoute(text, sender, store);
+  }
+  const slots = routeSlots(flow);
+  if (BACK.has(norm(text))) {
+    saveFlow(sender, store, { awaiting: 'date', ...slots });
+    return { kind: 'reply', text: askDate() };
+  }
+  const time = resolveTime(text);
+  if (time === null) {
+    return { kind: 'reply', text: badTime() }; // stay on the step (§6.2)
+  }
+  const date = carryDate(flow, now); // slotDate is set at the date step
+  saveFlow(sender, store, { awaiting: 'results', ...slots, slotDate: date, slotTime: time });
+  return results(slots, combine(date, time, now), false);
+}
+
+function handleResults(
+  text: string,
+  sender: string,
+  flow: PendingFlow,
+  store: ConversationStore,
+  now: Date,
+): RouteOutcome {
+  // A new route wipes every slot and starts a fresh flow (§8.3).
+  if (hasRouteSeparator(text)) {
+    store.clear(sender);
+    return beginRoute(text, sender, store);
+  }
+  const slots = routeSlots(flow);
+
+  // Lone date → keep the last time (or "now" if the last query was a now-query).
+  const date = resolveDate(text, now);
+  if (date !== null) {
+    const time = flow.slotTime ?? { kind: 'now' };
+    saveFlow(sender, store, { awaiting: 'results', ...slots, slotDate: date, slotTime: time });
+    return results(slots, combine(date, time, now), date.kind === 'now');
+  }
+
+  // Lone time → keep the last date.
+  const time = resolveTime(text);
+  if (time !== null) {
+    const date2 = carryDate(flow, now);
+    saveFlow(sender, store, { awaiting: 'results', ...slots, slotDate: date2, slotTime: time });
+    return results(slots, combine(date2, time, now), false);
+  }
+
+  // Unrecognised — nudge again (§4.5).
+  return { kind: 'reply', text: resultsNudge() };
 }

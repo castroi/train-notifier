@@ -8,16 +8,19 @@
  */
 
 import type { ConversationStore } from './bot/conversation.ts';
+import { resolveDate, resolveTime } from './bot/datetime.ts';
 import { normalize } from './bot/normalize.ts';
 import { parseInput, resolveEager } from './bot/parse.ts';
 import {
   customNoTrains,
-  customReport,
   eagerGreeting,
   menu,
   noTrains,
   outage,
   routeReport,
+  wizardNoRoute,
+  wizardReport,
+  wizardRollover,
 } from './bot/templates.ts';
 import type { BotRoute, BotWindow } from './bot/types.ts';
 import type { Config, Route } from './config/types.ts';
@@ -228,17 +231,32 @@ export async function handleMessage(
         return;
       }
       // 'breakout' is handled by the caller and never dispatched here.
-      if (outcome.kind !== 'resolved') return;
-      // outcome.kind === 'resolved' — fetch + format within the deadline.
+      if (outcome.kind !== 'results') return;
+      // outcome.kind === 'results' — fetch at the wizard's resolved datetime,
+      // echo the absolute datetime header, and roll over if the requested day
+      // has no remaining service (§8.2/§8.4).
       try {
         await withDeadline(async (signal) => {
-          const result = await deps.fetchRoutes(outcome.fromId, outcome.toId, now, signal);
-          const trains = extractTrains(result, CUSTOM_ROUTE_COUNT, now.getTime());
+          const result = await deps.fetchRoutes(outcome.fromId, outcome.toId, outcome.when, signal);
+          // Filter relative to the requested instant so "no trains left today"
+          // surfaces as a next-day (dayNote) rollover.
+          const trains = extractTrains(result, CUSTOM_ROUTE_COUNT, outcome.when.getTime());
           const lines = trains.map(formatTrainLine);
-          const message =
-            lines.length > 0
-              ? customReport(outcome.label, lines, now, trains[0].dayNote)
-              : customNoTrains(outcome.label);
+          let message: string;
+          if (lines.length === 0) {
+            message = customNoTrains(outcome.label);
+          } else if (trains[0].dayNote !== '' && Number.isFinite(trains[0].departEpoch)) {
+            // Nothing left on the requested day → show the next service day.
+            message = wizardRollover(
+              outcome.label,
+              lines,
+              new Date(trains[0].departEpoch),
+              now,
+              outcome.when,
+            );
+          } else {
+            message = wizardReport(outcome.label, lines, outcome.when, now, !outcome.isNow);
+          }
           await deps.send(botNumber, ownerUuid, message, signal);
           deps.counters.record(CUSTOM_KEY, 'success');
         }, 25_000);
@@ -257,7 +275,7 @@ export async function handleMessage(
 
     const flow = store.get(sender);
     if (flow) {
-      const outcome = continueRoute(coreBody, sender, flow, store);
+      const outcome = continueRoute(coreBody, sender, flow, store, now);
       if (outcome.kind === 'breakout') {
         // Reserved/control word during a flow → fall through to the core path.
         coreBody = outcome.text;
@@ -276,6 +294,22 @@ export async function handleMessage(
 
   // --- c + d. Parse + fetch + send (with deadline) ----------------------
   const parsed = parseInput(coreBody, botRoutes);
+
+  // No active wizard, but a bare date/time arrived (e.g. the wizard's TTL
+  // lapsed): the user is answering a question we no longer remember. Nudge them
+  // to send a route instead of dumping the menu — but only when it didn't match
+  // a configured route/alias (those are handled by parseInput above) (§7.2).
+  if (
+    deps.conversation &&
+    parsed.kind === 'menu' &&
+    (resolveDate(coreBody, now) !== null || resolveTime(coreBody) !== null)
+  ) {
+    await withDeadline(
+      (signal) => deps.send(botNumber, ownerUuid, wizardNoRoute(), signal),
+      25_000,
+    );
+    return;
+  }
 
   // The route a rail fetch is attributed to (null for a plain menu, which
   // performs no fetch). Recorded exactly once: success after send, fail on

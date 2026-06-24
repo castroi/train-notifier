@@ -3,7 +3,9 @@
  * In-memory only — no persistence, no PII logged.
  */
 
-const DEFAULT_TTL_MS = 120_000; // 2 minutes
+import type { DateSlot, TimeSlot } from './datetime.ts';
+
+const DEFAULT_TTL_MS = 600_000; // 10 minutes (wizard plan §7.2)
 
 export interface PendingFlow {
   sender: string;
@@ -12,8 +14,10 @@ export interface PendingFlow {
    * 'origin'/'destination' — awaiting a pick for that half: a number when
    *                 `candidates` is non-empty, else free text.
    * 'confirm'     — awaiting yes/no for `confirmTarget`.
+   * 'date'/'time' — wizard steps after the route resolves (plan §3).
+   * 'results'     — results shown; awaiting a follow-up date/time or a new route.
    */
-  awaiting: 'route' | 'origin' | 'destination' | 'confirm';
+  awaiting: 'route' | 'origin' | 'destination' | 'confirm' | 'date' | 'time' | 'results';
   origin?: string;
   destination?: string;
   candidates: string[];
@@ -22,6 +26,17 @@ export interface PendingFlow {
   confirmRole?: 'origin' | 'destination';
   /** Raw destination text stashed while the origin is being disambiguated. */
   destText?: string;
+  // --- Wizard slots (plan §2), present once the route has resolved -----------
+  /** Resolved origin station id. */
+  originId?: number;
+  /** Resolved destination station id. */
+  destId?: number;
+  /** "<From EN> → <To EN>" header label for the resolved route. */
+  routeLabel?: string;
+  /** Chosen date slot (carried across the time step and result follow-ups). */
+  slotDate?: DateSlot;
+  /** Chosen time slot (carried across result follow-ups). */
+  slotTime?: TimeSlot;
   expiresAt: number;
 }
 
