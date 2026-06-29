@@ -1,4 +1,21 @@
+import { readFileSync } from 'node:fs';
 import type { IdentityEntry, IncomingMessage, RawReceiveItem } from './types.js';
+
+/**
+ * The wrapper bearer token, read from SIGNAL_TOKEN_FILE (a Docker secret,
+ * preferred) or SIGNAL_TOKEN (env, e.g. tests). Returns undefined if unset.
+ */
+function signalToken(): string | undefined {
+  const file = process.env.SIGNAL_TOKEN_FILE;
+  if (file) {
+    try {
+      return readFileSync(file, 'utf8').trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return process.env.SIGNAL_TOKEN || undefined;
+}
 
 const logger = {
   info: (msg: string, meta?: Record<string, unknown>) =>
@@ -157,9 +174,6 @@ export function receiveStream(
     throw new Error('Global WebSocket is unavailable (requires Node 22+)');
   }
 
-  // http -> ws, https -> wss
-  const wsUrl = `${baseUrl().replace(/^http/, 'ws')}/v1/receive/${encodeBotNumber(botNumber)}`;
-
   let closed = false;
   let connected = false;
   let ws: WSLike | null = null;
@@ -168,6 +182,14 @@ export function receiveStream(
 
   function connect(): void {
     if (closed) return;
+    // http -> ws, https -> wss. The global WebSocket cannot set request headers,
+    // so the wrapper bearer token (WS_REQUIRE_AUTH) is passed as a ?token= query
+    // param instead. The wrapper strips it before forwarding upstream; never log it.
+    // Re-read the token on every (re)connect so a rotated secret is picked up
+    // without restarting the process (send() likewise re-reads it per call).
+    const token = signalToken();
+    const query = token ? `?token=${encodeURIComponent(token)}` : '';
+    const wsUrl = `${baseUrl().replace(/^http/, 'ws')}/v1/receive/${encodeBotNumber(botNumber)}${query}`;
     ws = new WS!(wsUrl);
 
     // Re-arm the connection exactly once. Triggered by error OR close (some
@@ -263,6 +285,14 @@ export async function send(
     recipients: [recipient],
   });
 
+  // The per-bot wrapper requires a bearer token on /v2/send (sender-binding
+  // auth). SIGNAL_TOKEN is injected by the deployment; absent in unit tests.
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const sendToken = signalToken();
+  if (sendToken) {
+    headers.Authorization = `Bearer ${sendToken}`;
+  }
+
   const MAX_ATTEMPTS = 3; // initial + 2 retries
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -274,7 +304,7 @@ export async function send(
     try {
       res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body,
         signal,
       });
