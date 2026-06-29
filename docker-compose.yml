@@ -1,24 +1,75 @@
 # ============================================================
-# train-notifier deployment
+# train-notifier deployment (per-bot wrapper topology)
 #
-# Joins your EXISTING signal-cli-rest-api stack's Docker network so the bot can
-# reach the Signal API by service name. Set these in .env:
-#   SIGNAL_NETWORK   the external network your signal-cli container is on
-#                    (find it with `docker network ls`)
-#   SIGNAL_API_URL   http://<signal-service-name>:8080
+# The bot no longer reaches signal-cli directly. It talks ONLY to its own
+# sender-binding wrapper (signal-wrapper), which injects this bot's number and
+# forwards to the shared signal-cli on the external signal-net. The bot sits on
+# its own private bridge (botnet-train) and never joins signal-net.
 #
-# This is a SEPARATE compose project. It does not create, modify, or restart
-# the signal-cli container — `external: true` only attaches this one container
-# to the already-existing network. Reuse the running signal-cli-rest-api;
-# do NOT start a second one.
+#   train-notifier ──botnet-train──► wrapper-train ──signal-net──► signal-api
+#
+# Set in .env:  SIGNAL_API_URL=http://wrapper-train:8080 , SIGNAL_NETWORK (the
+#               existing signal-cli network), SIGNAL_BACKEND_URL (the shared
+#               signal-cli's URL on that network, e.g. http://signal-api:8080).
+# The bearer token is NOT an env var — it lives only in the ./secrets/signal_token
+# Docker secret (below), read by both the wrapper and the bot.
+# `external: true` on signal-net only attaches the wrapper to the already-running
+# signal-cli network — it does NOT start a second signal-cli.
 # ============================================================
 
 networks:
   signal-net:
     external: true
     name: ${SIGNAL_NETWORK:-signal-net}
+  botnet-train:
+    driver: bridge
+
+# Wrapper bearer token as a file-mounted Docker secret (kept out of `docker inspect`).
+# Create it once (random) and lock it down; both the wrapper (BOT_TOKEN_FILE) and the
+# bot (SIGNAL_TOKEN_FILE) read this one file, so the value is shared automatically:
+#   openssl rand -hex 32 > ./secrets/signal_token && chmod 600 ./secrets/signal_token
+# secrets/ is gitignored.
+secrets:
+  signal_token:
+    file: ./secrets/signal_token
 
 services:
+
+  wrapper-train:
+    image: ghcr.io/castroi/signal-wrapper:latest
+    restart: unless-stopped
+    init: true
+    environment:
+      - BOT_NUMBER=${BOT_NUMBER}           # fixed sender, from .env (not secret)
+      # The shared signal-cli's URL on signal-net. Its service alias varies per
+      # host, so it's configurable in .env (default matches the common name).
+      - BACKEND_URL=${SIGNAL_BACKEND_URL:-http://signal-api:8080}
+      - BOT_TOKEN_FILE=/run/secrets/signal_token   # docker secret, not env (not in `docker inspect`)
+      - WS_REQUIRE_AUTH=true               # require the bearer on /v1/receive too
+    secrets:
+      - signal_token
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 32m
+    networks:
+      - signal-net        # reaches the shared signal-cli
+      - botnet-train      # serves only this bot
+    # No 'ports:' — internal only.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "/signal-wrapper", "healthcheck"]
+      start_period: 5s
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   train-notifier:
     build: .
@@ -50,17 +101,23 @@ services:
         max-file: "3"
 
     env_file:
-      - .env             # RAIL_URL, RAIL_API_KEY, SIGNAL_API_URL, LOG_SALT
+      - .env             # RAIL_URL, RAIL_API_KEY, SIGNAL_API_URL, LOG_SALT (NOT the token)
     environment:
       - TZ=Asia/Jerusalem
       - HEARTBEAT_PATH=/run/heartbeat
       - CONFIG_PATH=/app/config.yaml
+      - SIGNAL_TOKEN_FILE=/run/secrets/signal_token   # same secret the wrapper uses; not in env
+    secrets:
+      - signal_token
 
     volumes:
       - ./config.yaml:/app/config.yaml:ro
 
+    depends_on:
+      - wrapper-train
+
     networks:
-      - signal-net
+      - botnet-train     # cannot reach signal-net or other bots; only its wrapper
 
     # No 'ports:' — inbound connections are intentionally blocked.
 

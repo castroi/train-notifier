@@ -224,6 +224,10 @@ describe('receive()', () => {
 describe('send()', () => {
   const RECIPIENT = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
+  beforeEach(() => {
+    delete process.env.SIGNAL_TOKEN; // isolate token state; don't depend on test order
+  });
+
   it('succeeds on 201 and calls /v2/send with correct payload', async () => {
     let capturedUrl = '';
     let capturedBody: unknown;
@@ -242,6 +246,31 @@ describe('send()', () => {
       number: BOT_NUMBER,
       recipients: [RECIPIENT],
     });
+  });
+
+  it('attaches the wrapper bearer token when SIGNAL_TOKEN is set', async () => {
+    process.env.SIGNAL_TOKEN = 'wrapper-token-abc';
+    let authHeader: string | undefined;
+    globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      authHeader = (init?.headers as Record<string, string>).Authorization;
+      return makeFakeResponse(201, { timestamp: '1' });
+    };
+    try {
+      await send(BOT_NUMBER, RECIPIENT, 'with auth');
+      assert.equal(authHeader, 'Bearer wrapper-token-abc');
+    } finally {
+      delete process.env.SIGNAL_TOKEN;
+    }
+  });
+
+  it('omits Authorization when SIGNAL_TOKEN is unset', async () => {
+    let hasAuth = true;
+    globalThis.fetch = async (_input: RequestInfo | URL, init?: RequestInit) => {
+      hasAuth = 'Authorization' in (init?.headers as Record<string, string>);
+      return makeFakeResponse(201, { timestamp: '1' });
+    };
+    await send(BOT_NUMBER, RECIPIENT, 'no auth');
+    assert.equal(hasAuth, false);
   });
 
   it('treats any 2xx (e.g. 200) as success', async () => {
@@ -389,9 +418,25 @@ describe('receiveStream()', () => {
   before(() => {
     originalWS = (globalThis as Record<string, unknown>).WebSocket;
     (globalThis as Record<string, unknown>).WebSocket = FakeWebSocket;
+    delete process.env.SIGNAL_TOKEN; // deterministic URL unless a test sets it
   });
   after(() => {
     (globalThis as Record<string, unknown>).WebSocket = originalWS;
+    delete process.env.SIGNAL_TOKEN;
+  });
+
+  it('passes the wrapper token as a ?token= query when SIGNAL_TOKEN is set', () => {
+    process.env.SIGNAL_TOKEN = 'wrapper-token-xyz';
+    try {
+      const stream = receiveStream(BOT_NUMBER, () => {});
+      assert.equal(
+        FakeWebSocket.last!.url,
+        `ws://signal-api:8080/v1/receive/${ENCODED_BOT}?token=wrapper-token-xyz`,
+      );
+      stream.close();
+    } finally {
+      delete process.env.SIGNAL_TOKEN;
+    }
   });
 
   it('connects to the ws:// receive URL and decodes text messages', () => {
