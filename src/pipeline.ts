@@ -207,7 +207,10 @@ export async function handleMessage(
   }
 
   const botNumber = config.signal.bot_number;
-  const ownerUuid = config.signal.owner_uuid;
+  // On-demand replies go back to whoever texted the bot — never the owner.
+  // (Scheduled/cron pushes target the owner; that lives in scheduler/runJob.ts.)
+  // isAllowed above guarantees sourceUuid is a present, non-empty string.
+  const sender = msg.sourceUuid ?? '';
   const botRoutes = toBotRoutes(config);
   const now = deps.now ? deps.now() : new Date();
 
@@ -219,16 +222,12 @@ export async function handleMessage(
   let coreBody = (msg.body ?? '').slice(0, MAX_BODY_LEN);
   if (deps.conversation) {
     const store = deps.conversation;
-    const sender = msg.sourceUuid ?? '';
 
     const dispatchCustom = async (outcome: RouteOutcome): Promise<void> => {
       if (outcome.kind === 'reply') {
         // Same deadline/abort discipline as the resolved/core paths so a hung
         // Signal bridge cannot wedge the handler on a plain reply.
-        await withDeadline(
-          (signal) => deps.send(botNumber, ownerUuid, outcome.text, signal),
-          25_000,
-        );
+        await withDeadline((signal) => deps.send(botNumber, sender, outcome.text, signal), 25_000);
         return;
       }
       // 'breakout' is handled by the caller and never dispatched here.
@@ -258,7 +257,7 @@ export async function handleMessage(
           } else {
             message = wizardReport(outcome.label, lines, outcome.when, now, !outcome.isNow);
           }
-          await deps.send(botNumber, ownerUuid, message, signal);
+          await deps.send(botNumber, sender, message, signal);
           deps.counters.record(CUSTOM_KEY, 'success');
         }, 25_000);
       } catch (err: unknown) {
@@ -267,7 +266,7 @@ export async function handleMessage(
           error: err instanceof Error ? err.message : String(err),
         });
         try {
-          await deps.send(botNumber, ownerUuid, outage());
+          await deps.send(botNumber, sender, outage());
         } catch {
           logger.warn('handleMessage: outage send also failed — dropping');
         }
@@ -290,10 +289,7 @@ export async function handleMessage(
     } else if (isRefreshWord(coreBody)) {
       // Refresh word with no live context (never set or TTL lapsed) → tell the
       // user to send a route first rather than dumping the menu (issue #15).
-      await withDeadline(
-        (signal) => deps.send(botNumber, ownerUuid, wizardNoRoute(), signal),
-        25_000,
-      );
+      await withDeadline((signal) => deps.send(botNumber, sender, wizardNoRoute(), signal), 25_000);
       return;
     } else if (hasRouteSeparator(coreBody)) {
       await dispatchCustom(beginRoute(coreBody, sender, store));
@@ -313,10 +309,7 @@ export async function handleMessage(
     parsed.kind === 'menu' &&
     (resolveDate(coreBody, now) !== null || resolveTime(coreBody) !== null)
   ) {
-    await withDeadline(
-      (signal) => deps.send(botNumber, ownerUuid, wizardNoRoute(), signal),
-      25_000,
-    );
+    await withDeadline((signal) => deps.send(botNumber, sender, wizardNoRoute(), signal), 25_000);
     return;
   }
 
@@ -375,7 +368,7 @@ export async function handleMessage(
       }
     }
 
-    await deps.send(botNumber, ownerUuid, message, signal);
+    await deps.send(botNumber, sender, message, signal);
     // Success is recorded only after the send actually completes.
     if (servedRouteKey !== null) {
       deps.counters.record(servedRouteKey, 'success');
@@ -396,7 +389,7 @@ export async function handleMessage(
     }
 
     try {
-      await deps.send(botNumber, ownerUuid, outage());
+      await deps.send(botNumber, sender, outage());
     } catch {
       // Best-effort: swallow and log silently.
       logger.warn('handleMessage: outage send also failed — dropping');
