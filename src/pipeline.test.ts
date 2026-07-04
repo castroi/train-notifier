@@ -21,7 +21,9 @@ import type { IncomingMessage } from './signal/types.ts';
 // ---------------------------------------------------------------------------
 
 const OWNER_UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
-const SENDER_UUID = OWNER_UUID; // allowed sender
+// The default sender is allowlisted but is NOT the owner, so every test that
+// asserts on the reply recipient actually exercises the sender/owner split.
+const SENDER_UUID = '99999999-8888-7777-6666-555555554444';
 const UNKNOWN_UUID = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
 /** A non-owner allowlisted sender (friend/family — the multi-allowlist case). */
 const FRIEND_UUID = '11111111-2222-3333-4444-555555555555';
@@ -30,7 +32,7 @@ const BASE_CONFIG: Config = {
   signal: {
     bot_number: '+972501234567',
     owner_uuid: OWNER_UUID,
-    allowlist: [OWNER_UUID],
+    allowlist: [OWNER_UUID, SENDER_UUID],
   },
   routes: [
     {
@@ -365,28 +367,24 @@ describe('handleMessage — rail failure', () => {
     );
   });
 
-  it('deadline exceeded → outage() message is sent (best-effort)', async () => {
-    const _deps = makeDeps({
-      // fetchRoutes never resolves within the 25 s deadline; simulate with a long delay.
-      // We inject a custom pipeline with a 50ms deadline to keep tests fast.
-      fetchRoutes: async () =>
-        new Promise<RailApiGetRoutesResult>((resolve) =>
-          setTimeout(() => resolve(makeFakeResult(1)), 60_000),
-        ),
-    });
-
-    // We can't easily override the internal deadline, so instead we test
-    // the outage path by throwing directly.
-    const deps2 = makeDeps({
-      fetchRoutes: async () => {
-        throw new Error('timeout simulation');
-      },
+  it('deadline exceeded → outage() message is sent (best-effort)', async (t) => {
+    // Drive the real ~25 s pipeline deadline with mocked timers: fetchRoutes
+    // never settles, so only the deadline can rescue the handler.
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const deps = makeDeps({
+      fetchRoutes: () => new Promise<RailApiGetRoutesResult>(() => {}), // never resolves
     });
     const msg = makeMsg({ body: '2' });
 
-    await handleMessage(msg, BASE_CONFIG, deps2, SALT);
+    const pending = handleMessage(msg, BASE_CONFIG, deps, SALT);
+    // Advance past the 25 s deadline so withDeadline aborts the fetch and the
+    // outage fallback fires.
+    t.mock.timers.tick(25_000);
+    await pending;
 
-    assert.equal(deps2.sendCalls[0]!.message, outage());
+    assert.equal(deps.sendCalls.length, 1, 'exactly one (outage) send expected');
+    assert.equal(deps.sendCalls[0]!.message, outage());
+    assert.equal(deps.sendCalls[0]!.recipient, SENDER_UUID);
   });
 
   it('rail failure + outage send also fails → does not throw', async () => {
