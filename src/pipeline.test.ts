@@ -23,6 +23,8 @@ import type { IncomingMessage } from './signal/types.ts';
 const OWNER_UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const SENDER_UUID = OWNER_UUID; // allowed sender
 const UNKNOWN_UUID = 'ffffffff-ffff-ffff-ffff-ffffffffffff';
+/** A non-owner allowlisted sender (friend/family — the multi-allowlist case). */
+const FRIEND_UUID = '11111111-2222-3333-4444-555555555555';
 
 const BASE_CONFIG: Config = {
   signal: {
@@ -183,14 +185,104 @@ describe('handleMessage — route input "2"', () => {
     assert.ok(text.includes('Haifa → Afula'), `Expected route-2 label in message; got: ${text}`);
   });
 
-  it('send uses correct botNumber and ownerUuid', async () => {
+  it('send uses correct botNumber and replies to the sender', async () => {
     const deps = makeDeps();
     const msg = makeMsg({ body: '1' });
 
     await handleMessage(msg, BASE_CONFIG, deps, SALT);
 
     assert.equal(deps.sendCalls[0]!.botNumber, BASE_CONFIG.signal.bot_number);
-    assert.equal(deps.sendCalls[0]!.recipient, BASE_CONFIG.signal.owner_uuid);
+    assert.equal(deps.sendCalls[0]!.recipient, msg.sourceUuid);
+  });
+});
+
+describe('handleMessage — replies go to the sender, not the owner', () => {
+  // Config where the owner and a friend are both allowlisted, but they are
+  // DIFFERENT UUIDs. The bot must answer whoever texted it.
+  const MULTI_CONFIG: Config = {
+    ...BASE_CONFIG,
+    signal: {
+      ...BASE_CONFIG.signal,
+      owner_uuid: OWNER_UUID,
+      allowlist: [OWNER_UUID, FRIEND_UUID],
+    },
+  };
+
+  it('route request from a friend → reply recipient is the friend', async () => {
+    const deps = makeDeps();
+    const msg = makeMsg({ sourceUuid: FRIEND_UUID, body: '2' });
+
+    await handleMessage(msg, MULTI_CONFIG, deps, SALT);
+
+    assert.equal(deps.sendCalls.length, 1, 'send must be called once');
+    assert.equal(
+      deps.sendCalls[0]!.recipient,
+      FRIEND_UUID,
+      `Expected reply to the friend (${FRIEND_UUID}); got ${deps.sendCalls[0]!.recipient}`,
+    );
+  });
+
+  it('menu request from a friend → reply recipient is the friend', async () => {
+    const deps = makeDeps({ now: () => dateAtJerusalemTime(12, 0) });
+    const msg = makeMsg({ sourceUuid: FRIEND_UUID, body: 'hello' });
+
+    await handleMessage(msg, MULTI_CONFIG, deps, SALT);
+
+    assert.equal(deps.sendCalls[0]!.recipient, FRIEND_UUID);
+  });
+
+  it('outage reply from a friend → reply recipient is the friend', async () => {
+    const deps = makeDeps({
+      fetchRoutes: async () => {
+        throw new Error('rail down');
+      },
+    });
+    const msg = makeMsg({ sourceUuid: FRIEND_UUID, body: '1' });
+
+    await handleMessage(msg, MULTI_CONFIG, deps, SALT);
+
+    assert.equal(deps.sendCalls[0]!.message, outage());
+    assert.equal(deps.sendCalls[0]!.recipient, FRIEND_UUID);
+  });
+
+  it('custom-route flow from a friend → every reply recipient is the friend', async () => {
+    const store = createConversationStore();
+    const deps = makeDeps({
+      conversation: store,
+      now: () => dateAtJerusalemTime(5, 0),
+      fetchRoutes: async () => makeUpcomingResult(3),
+    });
+
+    await handleMessage(
+      makeMsg({ sourceUuid: FRIEND_UUID, timestamp: 1, body: 'בנימינה אל נהריה' }),
+      MULTI_CONFIG,
+      deps,
+      SALT,
+    );
+    await handleMessage(
+      makeMsg({ sourceUuid: FRIEND_UUID, timestamp: 2, body: 'now' }),
+      MULTI_CONFIG,
+      deps,
+      SALT,
+    );
+
+    assert.equal(deps.sendCalls.length, 2);
+    for (const call of deps.sendCalls) {
+      assert.equal(
+        call.recipient,
+        FRIEND_UUID,
+        `custom-route reply must go to the friend; got ${call.recipient}`,
+      );
+    }
+  });
+
+  it('owner still receives their own on-demand replies', async () => {
+    const deps = makeDeps();
+    const msg = makeMsg({ sourceUuid: OWNER_UUID, body: '1' });
+
+    await handleMessage(msg, MULTI_CONFIG, deps, SALT);
+
+    assert.equal(deps.sendCalls[0]!.recipient, OWNER_UUID);
   });
 });
 
