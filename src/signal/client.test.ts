@@ -399,9 +399,11 @@ class FakeWebSocket {
   onerror: ((ev: unknown) => void) | null = null;
   onclose: (() => void) | null = null;
   url: string;
+  init: { headers?: Record<string, string> } | undefined;
   closed = false;
-  constructor(url: string) {
+  constructor(url: string, init?: { headers?: Record<string, string> }) {
     this.url = url;
+    this.init = init;
     FakeWebSocket.last = this;
     FakeWebSocket.count += 1;
   }
@@ -425,17 +427,35 @@ describe('receiveStream()', () => {
     delete process.env.SIGNAL_TOKEN;
   });
 
-  it('passes the wrapper token as a ?token= query when SIGNAL_TOKEN is set', () => {
+  it('sends the wrapper token as an Authorization header, not a query', () => {
     process.env.SIGNAL_TOKEN = 'wrapper-token-xyz';
     try {
       const stream = receiveStream(BOT_NUMBER, () => {});
-      assert.equal(
-        FakeWebSocket.last!.url,
-        `ws://signal-api:8080/v1/receive/${ENCODED_BOT}?token=wrapper-token-xyz`,
-      );
+      assert.equal(FakeWebSocket.last!.url, `ws://signal-api:8080/v1/receive/${ENCODED_BOT}`);
+      assert.deepEqual(FakeWebSocket.last!.init, {
+        headers: { Authorization: 'Bearer wrapper-token-xyz' },
+      });
       stream.close();
     } finally {
       delete process.env.SIGNAL_TOKEN;
+    }
+  });
+
+  it('omits headers when no token is configured', () => {
+    const stream = receiveStream(BOT_NUMBER, () => {});
+    assert.equal(FakeWebSocket.last!.init, undefined);
+    stream.close();
+  });
+
+  it('throws when SIGNAL_TOKEN_FILE is unreadable instead of connecting unauthenticated', () => {
+    process.env.SIGNAL_TOKEN_FILE = '/nonexistent/signal_token';
+    try {
+      assert.throws(
+        () => receiveStream(BOT_NUMBER, () => {}),
+        /SIGNAL_TOKEN_FILE set but unreadable/,
+      );
+    } finally {
+      delete process.env.SIGNAL_TOKEN_FILE;
     }
   });
 
