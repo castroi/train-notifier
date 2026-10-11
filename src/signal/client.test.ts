@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { after, before, beforeEach, describe, it, mock } from 'node:test';
 
 // ---------------------------------------------------------------------------
@@ -523,6 +526,44 @@ describe('receiveStream()', () => {
       stream.close();
     } finally {
       mock.timers.reset();
+    }
+  });
+
+  it('throws when SIGNAL_TOKEN_FILE is empty', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tn-token-'));
+    const file = join(dir, 'signal_token');
+    writeFileSync(file, '\n');
+    process.env.SIGNAL_TOKEN_FILE = file;
+    try {
+      assert.throws(() => receiveStream(BOT_NUMBER, () => {}), /SIGNAL_TOKEN_FILE is empty/);
+    } finally {
+      delete process.env.SIGNAL_TOKEN_FILE;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps retrying (does not throw) when the token becomes unreadable on reconnect', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tn-token-'));
+    const file = join(dir, 'signal_token');
+    writeFileSync(file, 'tok-1\n');
+    process.env.SIGNAL_TOKEN_FILE = file;
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      FakeWebSocket.count = 0;
+      const stream = receiveStream(BOT_NUMBER, () => {});
+      rmSync(file); // secret disappears (e.g. being rewritten)
+      FakeWebSocket.last!.onclose?.();
+      assert.doesNotThrow(() => mock.timers.tick(1000));
+      assert.equal(FakeWebSocket.count, 1, 'no socket opened without a token');
+      writeFileSync(file, 'tok-2\n'); // secret back
+      mock.timers.tick(30_000);
+      assert.equal(FakeWebSocket.count, 2, 'reconnected once the token is readable');
+      assert.deepEqual(FakeWebSocket.last!.init, { headers: { Authorization: 'Bearer tok-2' } });
+      stream.close();
+    } finally {
+      mock.timers.reset();
+      delete process.env.SIGNAL_TOKEN_FILE;
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

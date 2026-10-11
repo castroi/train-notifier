@@ -53,6 +53,8 @@ services:
       - signal_token
     read_only: true
     user: "65532:65532"
+    group_add:
+      - "65000"        # shared secret group: reads the 0640 signal_token
     cap_drop:
       - ALL
     security_opt:
@@ -89,6 +91,8 @@ services:
       - /run:mode=1777
 
     user: "10001:10001"
+    group_add:
+      - "65000"        # shared secret group: reads the 0640 signal_token
     cap_drop:
       - ALL
     security_opt:

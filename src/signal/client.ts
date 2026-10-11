@@ -187,6 +187,7 @@ export function receiveStream(
   let ws: WSLike | null = null;
   let attempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let isFirstConnect = true;
 
   function connect(): void {
     if (closed) return;
@@ -196,9 +197,28 @@ export function receiveStream(
     // second argument. Never log the token.
     // Re-read the token on every (re)connect so a rotated secret is picked up
     // without restarting the process (send() likewise re-reads it per call).
-    const token = signalToken();
+    // A bad secret fails fast on the first connect (startup). On a reconnect it
+    // is logged and retried with backoff instead — a secret being rewritten
+    // (e.g. `openssl rand > file` truncates first) must not kill the process.
+    let token: string | undefined;
+    try {
+      token = signalToken();
+    } catch (err) {
+      if (isFirstConnect) throw err;
+      attempt += 1;
+      const delay = Math.min(retryDelay(attempt), RECONNECT_MAX_MS);
+      logger.error('signal token unreadable — retrying', {
+        error: err instanceof Error ? err.message : String(err),
+        attempt,
+        delayMs: delay,
+      });
+      reconnectTimer = setTimeout(connect, delay);
+      return;
+    } finally {
+      isFirstConnect = false;
+    }
     const wsUrl = `${baseUrl().replace(/^http/, 'ws')}/v1/receive/${encodeBotNumber(botNumber)}`;
-    ws = token ? new WS!(wsUrl, { headers: { Authorization: `Bearer ${token}` } }) : new WS!(wsUrl);
+    ws = new WS!(wsUrl, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
 
     // Re-arm the connection exactly once. Triggered by error OR close (some
     // failure modes fire only one of them) and by the connect watchdog.
