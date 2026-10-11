@@ -36,6 +36,7 @@ jobs:
 
   docker:
     name: build & push multi-arch image (amd64 + arm64)
+    needs: quality       # never publish an image that failed lint/typecheck/tests
     runs-on: ubuntu-latest
     permissions:
       contents: read
