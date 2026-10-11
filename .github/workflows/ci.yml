@@ -35,7 +35,7 @@ jobs:
         run: npm test
 
   docker:
-    name: build & push arm64 image (Raspberry Pi target)
+    name: build & push multi-arch image (amd64 + arm64)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Emulate arm64 so the Pi image (64-bit Raspberry Pi OS) is validated in CI.
+      # Emulate arm64 so the Pi image (64-bit Raspberry Pi OS) builds alongside amd64.
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
@@ -55,10 +55,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push (linux/arm64)
+      - name: Build & push (linux/amd64, linux/arm64)
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/arm64
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: ghcr.io/castroi/train-notifier:latest
