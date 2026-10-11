@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { after, before, beforeEach, describe, it, mock } from 'node:test';
 
 // ---------------------------------------------------------------------------
@@ -399,9 +402,11 @@ class FakeWebSocket {
   onerror: ((ev: unknown) => void) | null = null;
   onclose: (() => void) | null = null;
   url: string;
+  init: { headers?: Record<string, string> } | undefined;
   closed = false;
-  constructor(url: string) {
+  constructor(url: string, init?: { headers?: Record<string, string> }) {
     this.url = url;
+    this.init = init;
     FakeWebSocket.last = this;
     FakeWebSocket.count += 1;
   }
@@ -425,17 +430,35 @@ describe('receiveStream()', () => {
     delete process.env.SIGNAL_TOKEN;
   });
 
-  it('passes the wrapper token as a ?token= query when SIGNAL_TOKEN is set', () => {
+  it('sends the wrapper token as an Authorization header, not a query', () => {
     process.env.SIGNAL_TOKEN = 'wrapper-token-xyz';
     try {
       const stream = receiveStream(BOT_NUMBER, () => {});
-      assert.equal(
-        FakeWebSocket.last!.url,
-        `ws://signal-api:8080/v1/receive/${ENCODED_BOT}?token=wrapper-token-xyz`,
-      );
+      assert.equal(FakeWebSocket.last!.url, `ws://signal-api:8080/v1/receive/${ENCODED_BOT}`);
+      assert.deepEqual(FakeWebSocket.last!.init, {
+        headers: { Authorization: 'Bearer wrapper-token-xyz' },
+      });
       stream.close();
     } finally {
       delete process.env.SIGNAL_TOKEN;
+    }
+  });
+
+  it('omits headers when no token is configured', () => {
+    const stream = receiveStream(BOT_NUMBER, () => {});
+    assert.equal(FakeWebSocket.last!.init, undefined);
+    stream.close();
+  });
+
+  it('throws when SIGNAL_TOKEN_FILE is unreadable instead of connecting unauthenticated', () => {
+    process.env.SIGNAL_TOKEN_FILE = '/nonexistent/signal_token';
+    try {
+      assert.throws(
+        () => receiveStream(BOT_NUMBER, () => {}),
+        /SIGNAL_TOKEN_FILE set but unreadable/,
+      );
+    } finally {
+      delete process.env.SIGNAL_TOKEN_FILE;
     }
   });
 
@@ -503,6 +526,44 @@ describe('receiveStream()', () => {
       stream.close();
     } finally {
       mock.timers.reset();
+    }
+  });
+
+  it('throws when SIGNAL_TOKEN_FILE is empty', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tn-token-'));
+    const file = join(dir, 'signal_token');
+    writeFileSync(file, '\n');
+    process.env.SIGNAL_TOKEN_FILE = file;
+    try {
+      assert.throws(() => receiveStream(BOT_NUMBER, () => {}), /SIGNAL_TOKEN_FILE is empty/);
+    } finally {
+      delete process.env.SIGNAL_TOKEN_FILE;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps retrying (does not throw) when the token becomes unreadable on reconnect', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tn-token-'));
+    const file = join(dir, 'signal_token');
+    writeFileSync(file, 'tok-1\n');
+    process.env.SIGNAL_TOKEN_FILE = file;
+    mock.timers.enable({ apis: ['setTimeout'] });
+    try {
+      FakeWebSocket.count = 0;
+      const stream = receiveStream(BOT_NUMBER, () => {});
+      rmSync(file); // secret disappears (e.g. being rewritten)
+      FakeWebSocket.last!.onclose?.();
+      assert.doesNotThrow(() => mock.timers.tick(1000));
+      assert.equal(FakeWebSocket.count, 1, 'no socket opened without a token');
+      writeFileSync(file, 'tok-2\n'); // secret back
+      mock.timers.tick(30_000);
+      assert.equal(FakeWebSocket.count, 2, 'reconnected once the token is readable');
+      assert.deepEqual(FakeWebSocket.last!.init, { headers: { Authorization: 'Bearer tok-2' } });
+      stream.close();
+    } finally {
+      mock.timers.reset();
+      delete process.env.SIGNAL_TOKEN_FILE;
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

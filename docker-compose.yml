@@ -27,7 +27,10 @@ networks:
 # Wrapper bearer token as a file-mounted Docker secret (kept out of `docker inspect`).
 # Create it once (random) and lock it down; both the wrapper (BOT_TOKEN_FILE) and the
 # bot (SIGNAL_TOKEN_FILE) read this one file, so the value is shared automatically:
-#   openssl rand -hex 32 > ./secrets/signal_token && chmod 600 ./secrets/signal_token
+#   openssl rand -hex 32 > ./secrets/signal_token
+#   sudo chown "$(id -u):65000" ./secrets/signal_token && chmod 640 ./secrets/signal_token
+# Compose bind-mounts it with the host file's owner/mode unchanged. The wrapper
+# (uid 65532) and the bot (uid 10001) read it via group_add 65000 — NOT chmod 600.
 # secrets/ is gitignored.
 secrets:
   signal_token:
@@ -50,6 +53,8 @@ services:
       - signal_token
     read_only: true
     user: "65532:65532"
+    group_add:
+      - "65000"        # shared secret group: reads the 0640 signal_token
     cap_drop:
       - ALL
     security_opt:
@@ -86,6 +91,8 @@ services:
       - /run:mode=1777
 
     user: "10001:10001"
+    group_add:
+      - "65000"        # shared secret group: reads the 0640 signal_token
     cap_drop:
       - ALL
     security_opt:

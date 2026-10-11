@@ -3,16 +3,24 @@ import type { IdentityEntry, IncomingMessage, RawReceiveItem } from './types.js'
 
 /**
  * The wrapper bearer token, read from SIGNAL_TOKEN_FILE (a Docker secret,
- * preferred) or SIGNAL_TOKEN (env, e.g. tests). Returns undefined if unset.
+ * preferred) or SIGNAL_TOKEN (env, e.g. tests). Returns undefined if unset;
+ * throws if SIGNAL_TOKEN_FILE is set but unreadable or empty.
  */
 function signalToken(): string | undefined {
   const file = process.env.SIGNAL_TOKEN_FILE;
   if (file) {
+    // Fail loudly: silently running unauthenticated only surfaces as opaque
+    // 401s from the wrapper. Never include the token in the error.
+    let token: string;
     try {
-      return readFileSync(file, 'utf8').trim() || undefined;
-    } catch {
-      return undefined;
+      token = readFileSync(file, 'utf8').trim();
+    } catch (err) {
+      throw new Error(
+        `SIGNAL_TOKEN_FILE set but unreadable: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
+    if (!token) throw new Error('SIGNAL_TOKEN_FILE is empty');
+    return token;
   }
   return process.env.SIGNAL_TOKEN || undefined;
 }
@@ -145,7 +153,7 @@ interface WSLike {
   onclose: (() => void) | null;
   close(): void;
 }
-type WSCtor = new (url: string) => WSLike;
+type WSCtor = new (url: string, init?: { headers?: Record<string, string> }) => WSLike;
 
 const RECONNECT_MAX_MS = 30_000;
 /** If the socket doesn't open within this long, treat it as failed and retry. */
@@ -179,18 +187,38 @@ export function receiveStream(
   let ws: WSLike | null = null;
   let attempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let isFirstConnect = true;
 
   function connect(): void {
     if (closed) return;
-    // http -> ws, https -> wss. The global WebSocket cannot set request headers,
-    // so the wrapper bearer token (WS_REQUIRE_AUTH) is passed as a ?token= query
-    // param instead. The wrapper strips it before forwarding upstream; never log it.
+    // http -> ws, https -> wss. The wrapper (WS_REQUIRE_AUTH) only accepts the
+    // bearer token as an Authorization header — a ?token= query is rejected with
+    // 401. Node 22's global WebSocket (undici) takes { headers } as a non-standard
+    // second argument. Never log the token.
     // Re-read the token on every (re)connect so a rotated secret is picked up
     // without restarting the process (send() likewise re-reads it per call).
-    const token = signalToken();
-    const query = token ? `?token=${encodeURIComponent(token)}` : '';
-    const wsUrl = `${baseUrl().replace(/^http/, 'ws')}/v1/receive/${encodeBotNumber(botNumber)}${query}`;
-    ws = new WS!(wsUrl);
+    // A bad secret fails fast on the first connect (startup). On a reconnect it
+    // is logged and retried with backoff instead — a secret being rewritten
+    // (e.g. `openssl rand > file` truncates first) must not kill the process.
+    let token: string | undefined;
+    try {
+      token = signalToken();
+    } catch (err) {
+      if (isFirstConnect) throw err;
+      attempt += 1;
+      const delay = Math.min(retryDelay(attempt), RECONNECT_MAX_MS);
+      logger.error('signal token unreadable — retrying', {
+        error: err instanceof Error ? err.message : String(err),
+        attempt,
+        delayMs: delay,
+      });
+      reconnectTimer = setTimeout(connect, delay);
+      return;
+    } finally {
+      isFirstConnect = false;
+    }
+    const wsUrl = `${baseUrl().replace(/^http/, 'ws')}/v1/receive/${encodeBotNumber(botNumber)}`;
+    ws = new WS!(wsUrl, token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
 
     // Re-arm the connection exactly once. Triggered by error OR close (some
     // failure modes fire only one of them) and by the connect watchdog.
