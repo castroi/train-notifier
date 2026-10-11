@@ -11,7 +11,7 @@ RUN npm ci --omit=dev
 
 # ============================================================
 # Stage 2 — runtime image
-# Target platform: linux/arm/v7 (Raspberry Pi 3)
+# Target platforms: linux/amd64, linux/arm64 (Raspberry Pi)
 #
 # NOTE: config.yaml and .env are mounted at runtime via
 #       docker-compose volumes / env_file — they are NOT
